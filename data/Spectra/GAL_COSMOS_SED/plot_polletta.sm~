@@ -1,0 +1,148 @@
+plot
+
+   macro read "/home/ilbert/bin/lit_macro.sm" lit
+
+   erase lweight 3 expand 1.3 ctype black
+   #limits 2.8 4.6 24 33.9 box
+   #limits 2.8 4.6 30 33.9 box
+   limits 2.8 4.6 28 32.9 box
+   #limits 2.9 4 31.5 33.5 box
+
+   ctype red 
+   plotCOSMOS Ell1_A_0.sed
+   plotCOSMOS Ell2_A_0.sed
+   plotCOSMOS Ell3_A_0.sed
+   plotCOSMOS Ell4_A_0.sed
+   plotCOSMOS Ell5_A_0.sed
+   plotCOSMOS Ell6_A_0.sed
+   plotCOSMOS Ell7_A_0.sed
+   plotCOSMOS S0_A_0_nodust.sed
+   plotCOSMOS Sa_A_0_nodust.sed
+   plotCOSMOS Sa_A_1_nodust.sed
+   plotCOSMOS Sb_A_0_nodust.sed
+   plotCOSMOS Sb_A_1_nodust.sed
+   plotCOSMOS Sc_A_0_nodust.sed
+   plotCOSMOS Sc_A_1_nodust.sed
+   plotCOSMOS Sc_A_2_nodust.sed
+   plotCOSMOS Sd_A_0_nodust.sed
+   plotCOSMOS Sd_A_1_nodust.sed
+   plotCOSMOS Sd_A_2_nodust.sed
+   plotCOSMOS Sdm_A_0_nodust.sed
+   ctype green
+   plotCOSMOS SB0_A_0_nodust.sed
+   plotCOSMOS SB1_A_0_nodust.sed
+   plotCOSMOS SB2_A_0_nodust.sed
+   plotCOSMOS SB3_A_0_nodust.sed
+   plotCOSMOS SB4_A_0_nodust.sed
+   plotCOSMOS SB5_A_0_nodust.sed
+   plotCOSMOS SB6_A_0_nodust.sed
+   plotCOSMOS SB7_A_0_nodust.sed
+   plotCOSMOS SB8_A_0_nodust.sed
+   plotCOSMOS SB9_A_0_nodust.sed
+   plotCOSMOS SB10_A_0_nodust.sed
+   plotCOSMOS SB11_A_0_nodust.sed
+
+   #ctype red
+   ##plot_one  csp_e0.25_z02_salp.sed_agb  bid
+   #ctype orange
+   #plot_one  csp_e1.00_z02_salp.sed_agb  bid
+   #ctype green  
+   #plot_one  csp_e3.00_z02_salp.sed_agb  bid
+   #ctype blue
+   ##plot_one  csp_e5.00_z02_salp.sed_agb  bid
+   #ctype black   
+   #plot_one  csp_e0.10_z02_salp.sed_agb  bid
+   #ctype cyan
+   #plot_one  csp_e20.0_z01_salp.sed_agb bid
+   #plot_one csp_e20.00_z02_salp.sed_agb csp_e20.0_z02_krou.sed_agb
+
+   ctype black
+   plot_one  ell_e0.1_z02.sed
+   ctype blue   
+   plot_one  spi_e20.00_z01.sed
+
+   ctype black ltype 0 
+   relocate $(lg(22000)) -10000 draw  $(lg(22000)) 10000 
+   relocate $(lg(36000)) -10000 draw  $(lg(36000)) 10000
+   ltype 2 
+   relocate $(lg(22000/2.)) -10000 draw  $(lg(22000/2.)) 10000 
+   relocate $(lg(36000/2.)) -10000 draw  $(lg(36000/2.)) 10000 
+   ltype 1 
+   relocate $(lg(22000/3.)) -10000 draw  $(lg(22000/3.)) 10000 
+   relocate $(lg(36000/3.)) -10000 draw  $(lg(36000/3.)) 10000 
+   ltype 0
+
+end
+
+
+plot_one 1
+    
+
+   data Age0.0050_csp_e0.10_z02_salp.sed_agb
+   read {lo 1 fo 2}
+   set fo2=fo if(lo>7900 && lo<8000)
+   vecminmax fo2 mino sumo
+
+  
+   data $1 
+   read {bid 1}
+
+   do i=1,61 {
+
+    if( $($i*1221)<$(dimen(bid))){
+
+    data $1 lines  $(($i-1)*1221+1) $($i*1221)
+    read {age1 1 l1 2 f1 3}
+    set fl=f1 if(l1>7900 && l1<8000)
+    vecminmax fl min1 sum1
+
+    #data $2 lines  $(($i-1)*1221+1) $($i*1221)
+    #read {age2 1 l2 2 f2 3}
+    #set fl=f2 if(l2>7900 && l2<8000)
+    #vecminmax fl min2 sum2
+
+    define agef1 (sprintf('%5.4f',$(age1[0])) )
+    define agef2 (sprintf('%5.4f',$(age2[0])) )
+
+
+    #if($agef1 >0.001 && $agef1 <14.5 && $agef2 >0.001 && $agef2 <14.5){
+ 
+    echo AGE $agef1 $agef2 
+
+    #ctype blue lweight 3
+    define shift  $(lg($sumo / $sum1))
+    lweight 1 connect (lg(l1)) (lg(f1)+$shift)
+
+    #ctype magenta lweight 1
+    #define shift  $(lg($sumo / $sum2))
+    #connect (lg(l2)) (lg(f2)+$shift)
+
+    #lweight 3 ctype black
+    define bid ?
+   #}
+  }
+ }
+
+
+end
+
+
+plotCOSMOS 1
+
+
+    data "/home/ilbert/lephare_200509/sed/GAL/COSMOS_SED/"$1
+    read {l 1 f1 2}
+    set fl1=f1 if(l>7900 && l<8000)
+    vecminmax fl1 min1 sum1
+
+    data Age0.0050_csp_e0.10_z02_salp.sed_agb
+    read {l2 1 f2 2}
+    set fl2=f2 if(l2>7900 && l2<8000)
+    vecminmax fl2 min2 sum2
+
+    set f = f1 * $sum2 / $sum1
+    
+    lweight 4 ltype 2 connect (lg(l)) (lg(f))
+    ltype 0
+    define bid ?
+end

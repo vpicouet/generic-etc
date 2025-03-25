@@ -1,0 +1,166 @@
+data Sd_A_1.sed read {l 1 f 2}
+data Sd_A_0.sed read {l2 1 f2 2}
+data Sd_A_2.sed read {l3 1 f3 2}
+erase limits l f box connect l f
+erase limits l f box connect l f ctype red connect l2 f2
+erase limits 900 10000 f box connect l f ctype red connect l2 f2
+ctype black erase limits 900 10000 f box connect l f ctype red connect l2 f2
+ctype black erase limits 900 10000 f box connect l f ctype red connect l2 f2 ctype green  connect l3 f3
+data Sd_A_0.sed read {l0 1 f0 2}
+data Sd_A_1.sed read {l1 1 f1 2}
+data Sd_A_2.sed read {l2 1 f2 2}
+ctype black erase limits 900 10000 f0 box connect l0 f0 ctype red connect l1 f1 ctype green  connect l2 f2
+ctype black erase limits 900 10000 f0 box connect l0 f0 ctype red connect l1 f1 ctype green  connect l2 f2 ctype blue  connect l3 f3
+data Sdm_A_0.sed read {l3 1 f3 2}
+ctype black erase limits 900 10000 f0 box connect l0 f0 ctype red connect l1 f1 ctype green  connect l2 f2 ctype blue  connect l3 f3
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+macro read plot_polletta.sm
+plot
+echo $(1500*1.8)
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+plot 0.5
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+macro read plot_polletta.sm
+plot 1
+plot 0
+macro read plot_polletta.sm
+plot 0
+macro read plot_polletta.sm
+plot 0
+macro read plot_polletta.sm
+plot 0
+macro read plot_polletta.sm
+plot 1
+plot 0.8
+macro read plot_polletta.sm
+plot 0.8 4500 8000 -10 -15
+plot 0.8 4500 8000 -10 -13
+plot 0.8 4500 9000 -10 -13
+plot 1 4500 9000 -10 -13
+plot 0 4500 9000 -10 -13
+plot 3000 4500 -10 -13
+plot 0 3000 4500 -10 -13
+!pwd
+macro read plot_polletta.sm
+!pwd
+plot 0 3000 4500 -10 -13
+plot 1 3000 4500 -10 -13
+plot 0 3000 8000 -10 -13
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+!ls  ../../filt/cosmos/u_sagem.lowres
+!ls  ../filt/cosmos/u_sagem.lowres
+!ls  ../filt/cosmos/
+!ls  ../../filt/cosmos/
+!ls  "../../../filt/cosmos/"
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+!ls -alrt  ../../../filt/cosmos/
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+!ls  ../../../filt/cfhtls/u_sagem.lowres
+!ls  ../../../filt/cfhtls/
+!ls  ../../../filt/
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 8000 -10 -13
+plot 1 3000 10000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 10000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 10000 -10 -13
+macro read plot_polletta.sm
+plot 1 3000 10000 -13 -5
+plot 1 3000 10000 -20 -5
+plot 1 3000 10000 -20 20\
+plot 1 3000 10000 0 10
+plot 1 3000 10000 1 6
+macro read plot_polletta.sm
+plot 1 3000 10000 1 6
+macro read plot_polletta.sm
+plot 1 3000 10000 1 6
+macro read plot_polletta.sm
+plot 1 3000 10000 1 6
+macro read plot_polletta.sm
+plot 1 3000 10000 1 6
+macro read plot_polletta.sm
+plot 1 3000 10000 1 6
+macro read plot_polletta.sm
+plot 1 3000 10000 1 6
+macro read plot_polletta.sm
+plot 1 3000 10000 1 6
+plot 0 3000 10000 1 6
+macro read plot_polletta.sm
+plot 0 3000 10000 1 6
+macro read plot_polletta.sm
+plot 0 3000 10000 1 6
+plot 1 3000 10000 1 6
+plot 0.8 3000 10000 1 6
+plot 0.8 3000 10000 3 5
+plot 0.8 3000 10000 4 5
+plot 1 3000 10000 4 5
+plot 1.2 3000 10000 4 5
+plot 1 3000 10000 4 5
+macro read plot_polletta.sm
+plot 1 3000 10000 4 5
+plot 1 3000 20000 4 5
+plot 1 3000 20000 4 8
+plot 1 3000 20000 4 6
+plot 1 3000 25000 4 6

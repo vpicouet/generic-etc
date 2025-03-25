@@ -1,0 +1,32 @@
+numpy #==1.24 
+ipywidgets   #==7.7.2 Now last=8.15 to remove issue with tab names
+scipy 
+matplotlib #==3.6.2
+astropy
+gdown==4.3.0
+ipympl    #==0.9.2  I don't think we need that
+voila    #==0.3.4 #makes it work on 3.8. Still a bug on 3.12 heroku
+jinja2   ==2.11.3
+markupsafe==2.0.1
+voila-material
+ipython
+cmocean
+pandas
+Pillow
+cycler
+nbimporter
+specsim
+ipykernel
+openpyxl
+
+# lxml_html_clean
+# plotly
+# specreduce
+#google_drive_downloader
+#ipyvolume
+#django
+#gunicorn
+#django-heroku
+#datetime
+#astroquery
+#bqplot

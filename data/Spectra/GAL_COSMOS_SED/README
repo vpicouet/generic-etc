@@ -1,0 +1,11 @@
+
+ The list COSMOS_MOD.list includes 32 SEDs used by O. Ilbert for COSMOS photo-z
+
+ They have to be combined with the following parameters :
+
+   MOD_EXTINC :  13,23,23,31,23,31,23,31
+   EXTINC_LAW :  SMC_prevot.dat,SB_calzetti.dat,SB_calzetti_bump1.dat,SB_calzetti_bump2.dat
+   EB_V       :  0.000,0.100,0.200,0.300,0.400,0.500
+
+
+  
