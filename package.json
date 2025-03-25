@@ -1,0 +1,23 @@
+{
+  "name": "fireball2-etc",
+  "version": "1.0.0",
+  "description": "[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/vpicouet/fireball2-etc/main?labpath=notebooks%2FETC.ipynb)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vpicouet/fireball2-etc.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/vpicouet/fireball2-etc/issues"
+  },
+  "homepage": "https://github.com/vpicouet/fireball2-etc#readme",
+  "engines": {
+    "node": ">= 6.9.4",
+    "npm": ">= 4.4.0"
+  }
+}

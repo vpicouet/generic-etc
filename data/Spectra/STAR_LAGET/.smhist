@@ -1,0 +1,3 @@
+data T6750G400.dat read {l 1 f 2}
+erase limits l f box connect l f
+erase limits 0 20000 f box connect l f
