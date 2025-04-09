@@ -1088,7 +1088,6 @@ class Observation:
                         name_ = "_remap.fits" if remap else "_resampled.fits"
                         new_cube = convert_fits_cube("../data/Emission_cube/"+ source.split("-")[0] + ".fits","../data/Emission_cube/"+ source.split("-")[0] + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,remap=remap)                         
                         cube_detector =  fits.open(new_cube)[0].data
-                        # print(np.nanmin(cube_detector))
                         cube_detector -= np.nanmedian(cube_detector)
                         cube_detector[cube_detector<np.nanmedian(cube_detector)]= np.nanmedian(cube_detector)
                         # else:
@@ -1100,7 +1099,6 @@ class Observation:
                         cube_detector = self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)              #np.nanmax(cube_detector)
                         # else:
                         # cube_detector = self.Signal_el * cube_detector/ np.nanmax(cube_detector)
-                        # print(np.nanmin(cube_detector))
                         fitswrite(cube_detector,"/tmp/gal_simu.fits")
                         cube_detector = np.transpose(cube_detector, (1, 2, 0))
                     else:
@@ -1109,7 +1107,8 @@ class Observation:
                     # print(cube_detector.min(),cube_detector.max(),np.argmax(cube_detector))
                     if IFS:
                         if source_image=="Source" :
-                            return np.transpose(cube_detector, (2, 0, 1)), np.transpose(cube_detector, (2, 0, 1))
+                            # return np.transpose(cube_detector, (2, 0, 1)), np.transpose(cube_detector, (2, 0, 1))
+                            return cube_detector, cube_detector
                         cube_spatial = np.array([gaussian_filter(cube_detector[:, :, i], sigma=Rx) for i in range(cube_detector.shape[2])])
                         cube_spatial *= np.nanmax(cube_detector) /  np.nanmax(cube_spatial)
                         #TODO add 
@@ -1129,12 +1128,14 @@ class Observation:
                         new_Nx = Nx // reduction  # Nouvelle taille en X
                         cube_reduced = np.array([np.nanmean(cube_detector[i * reduction:(i + 1) * reduction, :, :], axis=0) for i in range(new_Nx)])
                         cube_detector = np.array(cube_reduced)  # Remettre en array numpy
-
-                        cube_detector_stack = cube_detector.copy()
-                        if (self.EM_gain>1) :
+                        cube_detector_stack = np.ones(cube_detector.shape)
+                        if (self.EM_gain>1) : # TODO does not work!!!
                             if self.counting_mode : 
+                                print(2)
                                 list_im =[(np.random.gamma(np.random.poisson(cube_detector)  + np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int) , self.EM_gain)) + np.random.normal(0, self.RN, cube_detector.shape) for i in range(int(stack))]
+                                print(list_im)
                                 cube_detector_stack = np.mean([np.array(l>5.5*self.RN) for l in list_im],axis=0)   
+                                print(cube_detector_stack)
                             else:
                                 CIC =  np.mean([  np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int)   for i in range(int(stack)) ],axis=0)
                                 if int(stack)>0 :
@@ -1154,6 +1155,9 @@ class Observation:
                             counting_image[cube_detector>5.5*self.RN]=1
                             cube_detector=counting_image
                         return cube_detector, cube_detector_stack
+                        # return cube_detector, cube_detector
+
+                        # return np.transpose(cube_detector, (1, 0, 2)), np.transpose(cube_detector_stack, (1, 0, ))  , 
                     else:
                         pre_im = np.mean(cube_detector[:,np.max([0,int(50-self.Slitwidth/self.pixel_scale/2+self.Δx)]):int(50+self.Slitwidth/self.pixel_scale/2 +self.Δx+1),:], axis=1)
                         slit_profile = (slit_profile - np.nanmin(slit_profile) )/ np.nanmax(slit_profile - np.nanmin(slit_profile) )
@@ -1304,6 +1308,7 @@ class Observation:
 
         source_im_only_source =  source_im  * int(self.exposure_time)
         if (source_image=="Source") | (source_image=="Convolved source") :
+            print(source_im_only_source.shape)
             return source_im_only_source, source_im_only_source
         source_background = self.sky_im  * int(self.exposure_time) + self.Dark_current_f  + self.extra_background * int(self.exposure_time)/3600 
         source_im =  source_background +  source_im_only_source
