@@ -34,6 +34,31 @@ This article briefly outlines its development philosophy and significant role in
 
 
 
+# Installing locally 
+
+
+- Install a new conda environement
+```
+conda create --name etc python=3.12
+conda activate etc
+```
+- Download and install the github package
+```
+git clone https://github.com/vpicouet/generic-etc.git
+cd generic-etc
+pip install -r requirements.txt
+open notebooks/ETC.ipynb
+```
+We advise to use vscode or vscodium to run the notebook.
+Using Zen mode and hide the first cell allows to use the notebook almost as an app.
+The first time you launch the notebook, it will download a couple datacubes.
+
+If you want to pull any new update just run 
+```
+git pull
+```
+
+
 ## Outputs
 
 ### SNR visualization
@@ -184,22 +209,3 @@ In the case of electron-amplified CCDs, some considerations must be taken into a
 
 
 
-
-
-# Installing locally spectro-imager-etc
-
-
-- Installing a new conda environement
-```
-conda create --name etc python=3.12
-conda activate etc
-```
-- Download and install the github package
-```
-git clone https://github.com/vpicouet/spectro-imager-etc.git
-pip3 install -e .
-```
-If you want to pull any new update just run 
-```
-git pull
-```

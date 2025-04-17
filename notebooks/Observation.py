@@ -38,6 +38,44 @@ np.seterr(invalid='ignore')
 from scipy.ndimage import map_coordinates
 
 
+
+
+
+def download(url, file=""):
+    """Download a file
+    """
+    from tqdm import tqdm  # , tqdm_gui
+    import requests
+
+    try:
+        response = requests.get(url, stream=True)
+    except requests.exceptions.RequestException as e:
+        verboseprint(e)
+        return False
+    else:
+        total_size_in_bytes = int(response.headers.get("content-length", 0))
+        block_size = 1024  # 1 Kibibyte
+        progress_bar = tqdm(
+            total=0.95 * total_size_in_bytes, unit="iB", unit_scale=True
+        )
+        with open(file, "wb") as file:
+            for data in response.iter_content(block_size):
+                progress_bar.update(len(data))
+                file.write(data)
+        # progress_bar.close()
+        # tqdm_gui.close(progress_bar)
+        # progress_bar.display()
+        # progress_bar.plt.close(progress_bar.fig)
+        # plt.show(block=False)
+        # plt.close('all')
+        # plt.close(progress_bar.fig)
+        if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
+            verboseprint("ERROR, something went wrong")
+            return False
+        else:
+            return True
+
+
 def create_wcs_header(wave_range_nm, spatial_extent_arcsec, output_shape):
     """Crée un header WCS avec affichage correct du slicer wavelength dans DS9."""
     from astropy.wcs import WCS
@@ -139,7 +177,7 @@ def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape
         # wave_start_out, wave_end_out = 400, 500
         input_wave_center = (wave_start_in+ wave_end_in)/2
         inst_wave_center = (wave_start_out+ wave_end_out)/2
-        if (input_wave_center < wave_start_out ) | (input_wave_center> wave_end_out):
+        if 1>0 : #(input_wave_center < wave_start_out ) | (input_wave_center> wave_end_out):
             ratio = inst_wave_center/input_wave_center
             # print(ratio)
             # = 121.5
@@ -1126,7 +1164,6 @@ class Observation:
                         # cube_detector[cube_detector==np.nanmin(cube_detector)] =np.nanmedian(cube_detector)
                         # print(np.nanmin(cube_detector))
                         # if remap:
-                        cube_detector = self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)              #np.nanmax(cube_detector)
                         # else:
                         # cube_detector = self.Signal_el * cube_detector/ np.nanmax(cube_detector)
                         fitswrite(cube_detector,"/tmp/gal_simu.fits")
@@ -1137,9 +1174,10 @@ class Observation:
                         fitswrite(cube_detector,"/tmp/gal_me.fits")
                     # print(cube_detector.min(),cube_detector.max(),np.argmax(cube_detector))
                     if IFS:
-                        if source_image=="Source" :
-                            # return np.transpose(cube_detector, (2, 0, 1)), np.transpose(cube_detector, (2, 0, 1))
-                            return cube_detector, cube_detector
+
+                        if source_image=="Source (Flux / e-)" :
+                            return self.Signal * cube_detector/ np.percentile(cube_detector,99.999) , self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)
+                        cube_detector = self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)              #np.nanmax(cube_detector)
                         cube_spatial = np.array([gaussian_filter(cube_detector[:, :, i], sigma=Rx) for i in range(cube_detector.shape[2])])
                         cube_spatial *= np.nanmax(cube_detector) /  np.nanmax(cube_spatial)
                         #TODO add 
@@ -1147,12 +1185,7 @@ class Observation:
                         cube_spatial = np.transpose(cube_spatial, (1, 2, 0))
                         # cube_spectral = np.array([gaussian_filter(cube_spatial[i, j, :], sigma=PSF_λ) for i in range(cube_spatial.shape[0]) for j in range(cube_spatial.shape[1])])
                         cube_detector = cube_spatial#.reshape(cube_spatial.shape)
-                        if source_image=="Convolved source" :
-                            return cube_detector, cube_detector
             
-
-
-
 
                         cube_detector += self.sky + self.Dark_current_f  
                         Nx, Ny, Nλ = cube_detector.shape
@@ -1162,12 +1195,15 @@ class Observation:
                         new_Nx = int(Nx * self.pixel_scale/ self.Slitwidth)
                         # cube_reduced = np.array([np.nanmean(cube_detector[i * reduction:(i + 1) * reduction, :, :], axis=0) for i in range(new_Nx)])
                         cube_reduced = np.array([np.nanmean(cube_detector[int(i * reduction):int((i + 1) * reduction), :, :], axis=0) for i in range(new_Nx)])
+                        cube_detector = np.array(cube_reduced)  # Remettre en array numpy
+                        if source_image=="Convolved source" :
+                            return cube_detector, cube_detector
+
                         if source_image=="SNR" : #need to be sure we are good for the SNR
                             SNR_all = (cube_reduced - np.nanmin(cube_reduced)) / np.ptp(cube_reduced - np.nanmin(cube_reduced)) * self.snrs_per_pixel[self.i] #/ np.sqrt(source_im + source_background + self.CIC_charge + self.RN**2)
                             SNR_single = SNR_all / np.sqrt(np.ones(50) * self.N_images_true)[self.i]
                             return SNR_single, SNR_all
 
-                        cube_detector = np.array(cube_reduced)  # Remettre en array numpy
                         cube_detector_stack = np.ones(cube_detector.shape)
                         if (self.EM_gain>1) : # TODO does not work!!!
                             if self.counting_mode : 
@@ -1200,10 +1236,12 @@ class Observation:
 
                         # return np.transpose(cube_detector, (1, 0, 2)), np.transpose(cube_detector_stack, (1, 0, ))  , 
                     else:
+                        cube_detector = self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)              #np.nanmax(cube_detector)
+
                         pre_im = np.mean(cube_detector[:,np.max([0,int(50-self.Slitwidth/self.pixel_scale/2+self.Δx)]):int(50+self.Slitwidth/self.pixel_scale/2 +self.Δx+1),:], axis=1)
                         slit_profile = (slit_profile - np.nanmin(slit_profile) )/ np.nanmax(slit_profile - np.nanmin(slit_profile) )
                         source_im =  atm_qe_normalized_shape.T*(pre_im.T * slit_profile).T/int(self.exposure_time)
-                        if source_image=="Source" :
+                        if "Source" in source_image:
                             return source_im  * int(self.exposure_time) , source_im  * int(self.exposure_time)
                         # TODO add slit size!!!
                         image_test = gaussian_filter(source_im, sigma=(Rx,self.diffuse_spectral_resolution/self.dispersion))
@@ -1278,8 +1316,8 @@ class Observation:
                     n_wave=size[0]
                     cube_detector = create_fits_cube(cube_size=(size[1], size[1], n_wave), pixel_scale=self.pixel_scale, wave_range=(wave_min,wave_max),continuum_flux=spectra* int(self.exposure_time),continuum_fwhm=self.Size_source, line_flux=self.Signal_el*0, line_center=self.wavelength, line_fwhm=self.Line_width, line_spatial_fwhm=self.Size_source)
                     cube_detector += self.sky + self.Dark_current_f  + self.extra_background * int(self.exposure_time)/3600 
-                    if source_image=="Source" :
-                        return cube_detector, cube_detector
+                    if "Source" in source_image:
+                        return self.Signal * cube_detector/ np.percentile(cube_detector,99.999) ,cube_detector
                     cube_spatial = np.array([gaussian_filter(cube_detector[:, :, i], sigma=Rx) for i in range(cube_detector.shape[2])])
                     fitswrite(cube_spatial, "/tmp/cube_spatial.fits")
                     cube_spatial = np.transpose(cube_spatial, (1, 2, 0))
@@ -1287,8 +1325,6 @@ class Observation:
                     cube_spatial *= np.nanmax(cube_detector) /  np.nanmax(cube_spatial)
                     cube_detector = cube_spatial#.reshape(cube_spatial.shape)
                     # if source_image:
-                    if source_image=="Convolved source" :
-                        return cube_detector, cube_detector
                         
 
                     Nx, Ny, Nλ = cube_detector.shape
@@ -1299,6 +1335,8 @@ class Observation:
                     cube_reduced = np.array([np.nanmean(cube_detector[int(i * reduction):int((i + 1) * reduction), :, :], axis=0) for i in range(new_Nx)])
                     cube_detector = np.array(cube_reduced)  # Remettre en array numpy
                     cube_detector_stack = cube_detector.copy()
+                    if source_image=="Convolved source" :
+                        return cube_detector, cube_detector
             
                     if source_image=="SNR" : # TODO need to be sure we are good for the SNR which sqrt(50)
                         SNR_all = (cube_detector - np.nanmin(cube_detector)) / np.ptp(cube_detector - np.nanmin(cube_detector)) * self.snrs_per_pixel[self.i] #/ np.sqrt(source_im + source_background + self.CIC_charge + self.RN**2)
@@ -1356,7 +1394,7 @@ class Observation:
         # if source_image :
 
         source_im_only_source =  source_im  * int(self.exposure_time)
-        if (source_image=="Source") | (source_image=="Convolved source") :
+        if ("Source" in source_image) | (source_image=="Convolved source") :
             # print(source_im_only_source.shape)
             return source_im_only_source, source_im_only_source
         source_background = self.sky_im  * int(self.exposure_time) + self.Dark_current_f  + self.extra_background * int(self.exposure_time)/3600 
