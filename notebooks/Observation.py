@@ -61,11 +61,11 @@ def create_wcs_header(wave_range_nm, spatial_extent_arcsec, output_shape):
     return header
 
 
-def convert_fits_cube(input_fits, output_fits, output_shape, wave_range_nm, spatial_extent_arcsec,redshift=0.7,remap=False):
+def convert_fits_cube(input_fits, output_fits, output_shape, wave_range_nm, spatial_extent_arcsec,redshift=0.7,phys=False):
     """Convertit un cube FITS avec WCS basé sur wave_range (nm) et spatial_extent (arcsec)."""
     input_cube = fits.open(input_fits)[0]
     
-    resampled_cube = resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape,remap=remap)
+    resampled_cube = resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape,phys=phys)
     resampled_cube = convert_LU2ergs(resampled_cube, np.mean(np.array(wave_range_nm)),redshift)
 
     header = create_wcs_header(wave_range_nm, spatial_extent_arcsec, output_shape)
@@ -94,7 +94,7 @@ def convert_ergs2LU(flux_ergs,wave_nm,Redshift):
     # LU = flux_ergs / (Energy * solid_angle)  # Convert ergs to LU
 
 
-def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape, remap=False):
+def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape, phys=False):
     """
     Resample un datacube avec interpolation/extrapolation selon longueur d'onde et spatial.
     """
@@ -103,9 +103,7 @@ def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape
     wave_start_out, wave_end_out = wave_range_nm
     input_nz, input_nx, input_ny = input_cube.data.shape
     # print(input_cube.data.shape)
-
     cunit3 = header.get('CUNIT3', 'nm').strip().lower()
-
     # Définition du facteur de conversion
     unit_conversion = {
         'm': 1e9,       # mètres → nanomètres
@@ -115,9 +113,7 @@ def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape
         'nm': 1,        # nanomètres (aucun changement)
         'angstrom': 0.1 # Ångströms → nanomètres
     }
-
     factor = unit_conversion.get(cunit3, 1)  # Valeur par défaut = 1 (nm)
-
     # Calcul correct des longueurs d'onde en tenant compte de l'unité
     wave_start_in = (header['CRVAL3'] + (1 - header['CRPIX3']) * header['CDELT3']) * factor
     wave_end_in = (header['CRVAL3'] + (input_nz - header['CRPIX3']) * header['CDELT3']) * factor
@@ -126,7 +122,8 @@ def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape
     spatial_radius_out = spatial_extent_arcsec / 2.0
 
 
-    if remap:
+    if phys==False:
+        # print("phys",phys,False)
         input_nx, input_ny, input_nz = input_cube.shape
         x_out = np.linspace(0, input_nx - 1, output_shape[0])
         y_out = np.linspace(0, input_ny - 1, output_shape[1])
@@ -136,7 +133,21 @@ def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape
         resampled_cube = map_coordinates(input_cube, [x_grid, y_grid, z_grid], order=1, mode='nearest')
         return resampled_cube
     else:
+        # print("phys",phys,True)
+        # if we are out of limit, we change the reshift of the cube to end in the limit:
+        # wave_start_in, wave_end_in = 203,205
+        # wave_start_out, wave_end_out = 400, 500
+        input_wave_center = (wave_start_in+ wave_end_in)/2
+        inst_wave_center = (wave_start_out+ wave_end_out)/2
+        if (input_wave_center < wave_start_out ) | (input_wave_center> wave_end_out):
+            ratio = inst_wave_center/input_wave_center
+            # print(ratio)
+            # = 121.5
+            redshift = inst_wave_center/(input_wave_center/(1+0.7))-1
+            # print(redshift)
+            wave_start_in, wave_end_in = wave_start_in*ratio, wave_end_in*ratio
         input_wave = np.linspace(wave_start_in, wave_end_in, input_nz)
+        # print(input_wave)
         input_x = np.linspace(-abs(spatial_radius_in_x), abs(spatial_radius_in_x), input_nx)
         input_y = np.linspace(-abs(spatial_radius_in_y),abs( spatial_radius_in_y), input_ny)
 
@@ -161,7 +172,7 @@ def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape
             (output_y[1] - output_y[0]) / (input_y[1] - input_y[0]) *
             (output_wave[1] - output_wave[0]) / (input_wave[1] - input_wave[0])
         )
-
+        # print(np.max(resampled_cube),scale_factor)
         return resampled_cube * scale_factor
         # TODO est ce des pixels ou autre chose ?? si c'est des pixels il faut multiplier par le rapport de la taille des pixels
 
@@ -385,9 +396,9 @@ def variable_smearing_kernels(image, smearing=1.5, SmearExpDecrement=50000):
 #temperature=-100,
 class Observation:
     @initializer
-    # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13*0.9, exposure_time=50, counting_mode=False, Signal=1e-16, EM_gain=1400, RN=109, CIC_charge=0.005, Dark_current=0.08, Sky=10000, readout_time=1.5, extra_background = 0,acquisition_time = 2,smearing=0,i=25,plot_=False,temperature=-100,n=n,PSF_RMS_mask=5, PSF_RMS_det=8, QE = 0.45,cosmic_ray_loss_per_sec=0.005,PSF_source=16,lambda_stack=1,Slitwidth=5,Bandwidth=200,Collecting_area=1,Δx=0,Δλ=0,pixel_scale=np.nan, Spectral_resolution=np.nan, dispersion=np.nan,Line_width=np.nan,wavelength=np.nan, pixel_size=np.nan,len_xaxis=50):#,photon_kept=0.7#, flight_background_damping = 0.9
-    def __init__(self, instruments=None, instrument="FIREBall-2 2025", Atmosphere=None, Throughput=None, exposure_time=None, counting_mode=False, Signal=None, EM_gain=None, RN=None, CIC_charge=None, Dark_current=None, Sky=None, readout_time=None, extra_background = None,acquisition_time = None,smearing=None,i=33,plot_=False,n=n,PSF_RMS_mask=None, PSF_RMS_det=None, QE = None,cosmic_ray_loss_per_sec=None,PSF_source=None,lambda_stack=1,Slitwidth=None,Bandwidth=None,Collecting_area=None,Δx=None,Δλ=None,pixel_scale=None, Spectral_resolution=None, dispersion=None,Line_width=None,wavelength=None, pixel_size=None,len_xaxis=50,Slitlength=None,IFS=None, Redshift=None, Throughput_FWHM=None, SNR_res="per pix",spectrograph=True):#,photon_kept=0.7#, flight_background_damping = 0.9
-    # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13, exposure_time=50, counting_mode=False, Signal=1e-17, EM_gain=1500, RN=40, CIC_charge=0.005, Dark_current=1, Sky=2e-18, readout_time=5, extra_background = 0.5,acquisition_time = 2,smearing=1.50,i=33,plot_=False,n=n,PSF_RMS_mask=2.5, PSF_RMS_det=3, QE = 0.4,cosmic_ray_loss_per_sec=0.005,PSF_source=16,lambda_stack=0.21,Slitwidth=6,Bandwidth=160,Collecting_area=0.707,Δx=0,Δλ=0,pixel_scale=1.1, Spectral_resolution=1300, dispersion=0.21,Line_width=15,wavelength=200, pixel_size=13,len_xaxis=50,Slitlength=10):#,photon_kept=0.7#, flight_background_damping = 0.9
+    # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13*0.9, exposure_time=50, counting_mode=False, Signal=1e-16, EM_gain=1400, RN=109, CIC_charge=0.005, Dark_current=0.08, Sky=10000, readout_time=1.5, extra_background = 0,acquisition_time = 2,smearing=0,i=25,plot_=False,temperature=-100,n=n,PSF_RMS_mask=5, PSF_RMS_det=8, QE = 0.45,cosmic_ray_loss_per_sec=0.005,Size_source=16,lambda_stack=1,Slitwidth=5,Bandwidth=200,Collecting_area=1,Δx=0,Δλ=0,pixel_scale=np.nan, Spectral_resolution=np.nan, dispersion=np.nan,Line_width=np.nan,wavelength=np.nan, pixel_size=np.nan,len_xaxis=50):#,photon_kept=0.7#, flight_background_damping = 0.9
+    def __init__(self, instruments=None, instrument="FIREBall-2 2025", Atmosphere=None, Throughput=None, exposure_time=None, counting_mode=False, Signal=None, EM_gain=None, RN=None, CIC_charge=None, Dark_current=None, Sky=None, readout_time=None, extra_background = None,acquisition_time = None,smearing=None,i=33,plot_=False,n=n,PSF_RMS_mask=None, PSF_RMS_det=None, QE = None,cosmic_ray_loss_per_sec=None,Size_source=None,lambda_stack=1,Slitwidth=None,Bandwidth=None,Collecting_area=None,Δx=None,Δλ=None,pixel_scale=None, Spectral_resolution=None, dispersion=None,Line_width=None,wavelength=None, pixel_size=None,len_xaxis=50,Slitlength=None,IFS=None, Redshift=None, Throughput_FWHM=None, SNR_res="per pix",spectrograph=True):#,photon_kept=0.7#, flight_background_damping = 0.9
+    # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13, exposure_time=50, counting_mode=False, Signal=1e-17, EM_gain=1500, RN=40, CIC_charge=0.005, Dark_current=1, Sky=2e-18, readout_time=5, extra_background = 0.5,acquisition_time = 2,smearing=1.50,i=33,plot_=False,n=n,PSF_RMS_mask=2.5, PSF_RMS_det=3, QE = 0.4,cosmic_ray_loss_per_sec=0.005,Size_source=16,lambda_stack=0.21,Slitwidth=6,Bandwidth=160,Collecting_area=0.707,Δx=0,Δλ=0,pixel_scale=1.1, Spectral_resolution=1300, dispersion=0.21,Line_width=15,wavelength=200, pixel_size=13,len_xaxis=50,Slitlength=10):#,photon_kept=0.7#, flight_background_damping = 0.9
         """
         ETC calculator: computes the noise budget at the detector level based on instrument/detector parameters
         This is currently optimized for slit spectrographs and EMCCD but could be pretty easily generalized to other instrument type if needed
@@ -404,8 +415,8 @@ class Observation:
     
     def initilize(self,IFS):
         self.precise = True
-        # self.Signal = Gaussian2D(amplitude=self.Signal,x_mean=0,y_mean=0,x_stddev=self.PSF_source,y_stddev=self.Line_width,theta=0)(self.Δx,self.Δλ)
-        # print("\ni",self.i,"\nAtmosphere",self.Atmosphere, "\nThroughput=",self.Throughput,"\nSky=",self.Sky, "\nacquisition_time=",self.acquisition_time,"\ncounting_mode=",self.counting_mode,"\nSignal=",self.Signal,"\nEM_gain=",self.EM_gain,"RN=",self.RN,"CIC_charge=",self.CIC_charge,"Dark_current=",self.Dark_current,"\nreadout_time=",self.readout_time,"\nsmearing=",self.smearing,"\nextra_background=",self.extra_background,"\nPSF_RMS_mask=",self.PSF_RMS_mask,"\nPSF_RMS_det=",self.PSF_RMS_det,"\nQE=",self.QE,"\ncosmic_ray_loss_per_sec=",self.cosmic_ray_loss_per_sec,"\nlambda_stack",self.lambda_stack,"\nSlitwidth",self.Slitwidth, "\nBandwidth",self.Bandwidth,"\nPSF_source",self.PSF_source,"\nCollecting_area",self.Collecting_area)
+        # self.Signal = Gaussian2D(amplitude=self.Signal,x_mean=0,y_mean=0,x_stddev=self.Size_source,y_stddev=self.Line_width,theta=0)(self.Δx,self.Δλ)
+        # print("\ni",self.i,"\nAtmosphere",self.Atmosphere, "\nThroughput=",self.Throughput,"\nSky=",self.Sky, "\nacquisition_time=",self.acquisition_time,"\ncounting_mode=",self.counting_mode,"\nSignal=",self.Signal,"\nEM_gain=",self.EM_gain,"RN=",self.RN,"CIC_charge=",self.CIC_charge,"Dark_current=",self.Dark_current,"\nreadout_time=",self.readout_time,"\nsmearing=",self.smearing,"\nextra_background=",self.extra_background,"\nPSF_RMS_mask=",self.PSF_RMS_mask,"\nPSF_RMS_det=",self.PSF_RMS_det,"\nQE=",self.QE,"\ncosmic_ray_loss_per_sec=",self.cosmic_ray_loss_per_sec,"\nlambda_stack",self.lambda_stack,"\nSlitwidth",self.Slitwidth, "\nBandwidth",self.Bandwidth,"\nSize_source",self.Size_source,"\nCollecting_area",self.Collecting_area)
         # print("\Collecting_area",self.Collecting_area, "\nΔx=",self.Δx,"\nΔλ=",self.Δλ, "\napixel_scale=",self.pixel_scale,"\nSpectral_resolution=",self.Spectral_resolution,"\ndispersion=",self.dispersion,"\nLine_width=",self.Line_width,"wavelength=",self.wavelength,"pixel_size=",self.pixel_size)
         self.spectro = self.spectrograph#False if np.isnan(self.instruments_dict[self.instrument]["dispersion"]) else True
     
@@ -419,12 +430,12 @@ class Observation:
                 self.Signal *= np.pi/4 # ratio between fiber disk and square slit
         
         if self.precise: # TODO are we sure we should do that here?
-            self.Signal *= (erf(self.PSF_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) )
+            self.Signal *= (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) )
             #convolve input flux by spectral resolution
             self.spectro_resolution_A = 10*self.wavelength/self.Spectral_resolution
             if self.spectro:
                 self.Signal *= (erf(self.Line_width / (2 * np.sqrt(2) * self.spectro_resolution_A  )) )
-            # print("Factor spatial and spectral",  (erf(self.PSF_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) ),   (erf(self.Line_width / (2 * np.sqrt(2) * 10*self.wavelength/self.Spectral_resolution)) ))
+            # print("Factor spatial and spectral",  (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) ),   (erf(self.Line_width / (2 * np.sqrt(2) * 10*self.wavelength/self.Spectral_resolution)) ))
         # print(self.IFS)
         if ~np.isnan(self.Slitwidth).all()  & (~self.IFS):  #& (self.precise) # & (self.SNR_res!="per Source")
             # assess flux fraction going through slit
@@ -440,10 +451,10 @@ class Observation:
         self.PSF_lambda_pix = 10*self.wavelength / self.Spectral_resolution / self.dispersion
 
         if self.spectro:
-            self.source_size =  (self.PSF_source * 2.35 /self.pixel_scale) * (self.Line_width / self.dispersion)
+            self.source_size =  (self.Size_source * 2.35 /self.pixel_scale) * (self.Line_width / self.dispersion)
             self.elem_size = (self.PSF_RMS_det * 2.35 /self.pixel_scale) * (self.PSF_lambda_pix)
         else:
-            self.source_size =  (self.PSF_source * 2.35 /self.pixel_scale) **2
+            self.source_size =  (self.Size_source * 2.35 /self.pixel_scale) **2
             self.elem_size = (self.PSF_RMS_det * 2.35 /self.pixel_scale) **2
 
 
@@ -480,9 +491,9 @@ class Observation:
         if (self.counting_mode) : #& (self.EM_gain>=1)  Normaly if counting mode is on EM_gain is >1
             if self.spectro:
                 if  (self.SNR_res!="per Source"):
-                    self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,self.PSF_source)  * self.arcsec2str  * self.dispersion
+                    self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str  * self.dispersion
                 else:
-                    self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.PSF_source  * self.arcsec2str  * self.dispersion
+                    self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.Size_source  * self.arcsec2str  * self.dispersion
             else:
                 self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100) 
 
@@ -502,7 +513,7 @@ class Observation:
         #     if  (self.SNR_res!="per Source"):
         #         self.nfibers = np.maximum(1,  (self.PSF_RMS_det * 2.35) / self.Slitwidth) # need to understand why we use slit width here!!
         #     else:
-        #         self.nfibers = np.maximum(1,  (self.PSF_source * 2.35) / self.Slitwidth) # need to understand why we use slit width here!!
+        #         self.nfibers = np.maximum(1,  (self.Size_source * 2.35) / self.Slitwidth) # need to understand why we use slit width here!!
         #     # self.nfibers = np.sqrt((self.PSF_RMS_det * 2.35)**2+self.Slitwidth**2)/(self.PSF_RMS_det * 2.35)
         # else: # Because for IFS we keep all the flux (what does not enter a fiber will enter the next one). should normally account for a fill factor but this could appear in throughput
         #     self.nfibers = 1
@@ -511,14 +522,14 @@ class Observation:
         
         if self.spectro:
             self.factor_CU2el_sky = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.Slitwidth * self.arcsec2str  * self.dispersion *self.pixel_scale**2
-            # self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,np.minimum(self.PSF_source,self.PSF_RMS_det)) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+            # self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,np.minimum(self.Size_source,self.PSF_RMS_det)) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
             if  (self.SNR_res!="per Source"):
-                self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,self.PSF_source) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+                self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,self.Size_source) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
             else:
-                self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.PSF_source * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+                self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.Size_source * self.arcsec2str  * self.dispersion *self.pixel_scale**2
         else: 
             # TODO for imager that already have some throughput, integrate over the throughput curve.
-            self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)     * self.pixel_scale**2 * self.Throughput_FWHM   * self.arcsec2str  # * self.dispersion * np.minimum(self.Slitwidth,self.PSF_source)  * self.arcsec2str
+            self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)     * self.pixel_scale**2 * self.Throughput_FWHM   * self.arcsec2str  # * self.dispersion * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str
             self.factor_CU2el_sky = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.pixel_scale**2 * self.Throughput_FWHM  * self.arcsec2str  # * self.dispersion  * self.Slitwidth 
         self.sky = self.Sky_CU*self.factor_CU2el_sky*self.exposure_time  # el/pix/frame
         self.Sky_noise = np.sqrt(self.sky * self.ENF) 
@@ -1021,7 +1032,7 @@ class Observation:
         stack = int(self.N_images_true)
         flux = (self.Signal_el /self.exposure_time)
         Rx = self.PSF_RMS_det/self.pixel_scale
-        PSF_x = np.sqrt((np.nanmin([self.PSF_source/self.pixel_scale,self.Slitlength/self.pixel_scale]))**2 + (Rx)**2)
+        PSF_x = np.sqrt((np.nanmin([self.Size_source/self.pixel_scale,self.Slitlength/self.pixel_scale]))**2 + (Rx)**2)
         PSF_λ = np.sqrt((self.diffuse_spectral_resolution/self.dispersion)**2 + (self.Line_width/self.dispersion)**2)
 
         wave_min, wave_max = 10*self.wavelength - (size[0]/2) * self.dispersion , 10*self.wavelength + (size[0]/2) * self.dispersion
@@ -1100,15 +1111,15 @@ class Observation:
                     n_wave=size[0]
                     if os.path.isfile("../data/Emission_cube/"+ source.split("-")[0] + ".fits"):
                         # print(source)
-                        remap = False if source.split("-")[1]=="resampled_phys" else True
+                        phys = True if source.split("-")[1]=="resampled_phys" else False
                         # if source.split("-")[0] == "lya_cube_merged_with_artificial_source_CU_1pc":
-                        name_ = "_resampled_phys.fits" if remap else "_resampled.fits"
-                        new_cube = convert_fits_cube("../data/Emission_cube/"+ source.split("-")[0] + ".fits","../data/Emission_cube/"+ source.split("-")[0] + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,remap=remap)                         
+                        name_ = "_resampled_phys.fits" if phys else "_resampled.fits"
+                        new_cube = convert_fits_cube("../data/Emission_cube/"+ source.split("-")[0] + ".fits","../data/Emission_cube/"+ source.split("-")[0] + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,phys=phys)                         
                         cube_detector =  fits.open(new_cube)[0].data
-                        print(1, cube_detector)
+                        # print(1, np.max(cube_detector), np.min(cube_detector))
                         cube_detector -= np.nanmedian(cube_detector)
                         cube_detector[cube_detector<np.nanmedian(cube_detector)]= np.nanmedian(cube_detector)
-                        print(2, cube_detector)
+                        # print(2, np.max(cube_detector), np.min(cube_detector))
                         # else:
                         #     cube_detector = fits.open("../data/Emission_cube/"+ source + ".fits")[0].data
                         # if np.nanmin(cube_detector) < 0:
@@ -1120,9 +1131,9 @@ class Observation:
                         # cube_detector = self.Signal_el * cube_detector/ np.nanmax(cube_detector)
                         fitswrite(cube_detector,"/tmp/gal_simu.fits")
                         cube_detector = np.transpose(cube_detector, (1, 2, 0))
-                        print(3, cube_detector)
+                        # print(3, np.nanmin(cube_detector), np.nanmin(cube_detector))
                     else:
-                        cube_detector = create_fits_cube(cube_size=(size[1], size[1], n_wave), pixel_scale=self.pixel_scale, wave_range=(wave_min,wave_max),continuum_flux=np.ones(n_wave)*self.extra_background * int(self.exposure_time)/3600 ,continuum_fwhm=None, line_flux=self.Signal_el, line_center=self.wavelength, line_fwhm=self.Line_width, line_spatial_fwhm=self.PSF_source,galaxy_shape=True, kpc_size=int(source.split(" ")[1]), redshift=self.Redshift,filament=True)
+                        cube_detector = create_fits_cube(cube_size=(size[1], size[1], n_wave), pixel_scale=self.pixel_scale, wave_range=(wave_min,wave_max),continuum_flux=np.ones(n_wave)*self.extra_background * int(self.exposure_time)/3600 ,continuum_fwhm=None, line_flux=self.Signal_el, line_center=self.wavelength, line_fwhm=self.Line_width, line_spatial_fwhm=self.Size_source,galaxy_shape=True, kpc_size=int(source.split(" ")[1]), redshift=self.Redshift,filament=True)
                         fitswrite(cube_detector,"/tmp/gal_me.fits")
                     # print(cube_detector.min(),cube_detector.max(),np.argmax(cube_detector))
                     if IFS:
@@ -1138,6 +1149,7 @@ class Observation:
                         cube_detector = cube_spatial#.reshape(cube_spatial.shape)
                         if source_image=="Convolved source" :
                             return cube_detector, cube_detector
+            
 
 
 
@@ -1145,17 +1157,25 @@ class Observation:
                         cube_detector += self.sky + self.Dark_current_f  
                         Nx, Ny, Nλ = cube_detector.shape
                         reduction = int(self.Slitwidth/self.pixel_scale)
-                        new_Nx = Nx // reduction  # Nouvelle taille en X
-                        cube_reduced = np.array([np.nanmean(cube_detector[i * reduction:(i + 1) * reduction, :, :], axis=0) for i in range(new_Nx)])
+                        reduction = self.Slitwidth/self.pixel_scale
+                        # new_Nx = Nx // reduction  # Nouvelle taille en X
+                        new_Nx = int(Nx * self.pixel_scale/ self.Slitwidth)
+                        # cube_reduced = np.array([np.nanmean(cube_detector[i * reduction:(i + 1) * reduction, :, :], axis=0) for i in range(new_Nx)])
+                        cube_reduced = np.array([np.nanmean(cube_detector[int(i * reduction):int((i + 1) * reduction), :, :], axis=0) for i in range(new_Nx)])
+                        if source_image=="SNR" : #need to be sure we are good for the SNR
+                            SNR_all = (cube_reduced - np.nanmin(cube_reduced)) / np.ptp(cube_reduced - np.nanmin(cube_reduced)) * self.snrs_per_pixel[self.i] #/ np.sqrt(source_im + source_background + self.CIC_charge + self.RN**2)
+                            SNR_single = SNR_all / np.sqrt(np.ones(50) * self.N_images_true)[self.i]
+                            return SNR_single, SNR_all
+
                         cube_detector = np.array(cube_reduced)  # Remettre en array numpy
                         cube_detector_stack = np.ones(cube_detector.shape)
                         if (self.EM_gain>1) : # TODO does not work!!!
                             if self.counting_mode : 
-                                print(2)
+                                # print(2)
                                 list_im =[(np.random.gamma(np.random.poisson(cube_detector)  + np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int) , self.EM_gain)) + np.random.normal(0, self.RN, cube_detector.shape) for i in range(int(stack))]
-                                print(list_im)
+                                # print(list_im)
                                 cube_detector_stack = np.mean([np.array(l>5.5*self.RN) for l in list_im],axis=0)   
-                                print(cube_detector_stack)
+                                # print(cube_detector_stack)
                             else:
                                 CIC =  np.mean([  np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int)   for i in range(int(stack)) ],axis=0)
                                 if int(stack)>0 :
@@ -1164,7 +1184,7 @@ class Observation:
                                     cube_detector_stack[:,:,:] =  0
                             cube_detector[:,:,:] += np.random.gamma( np.random.poisson(cube_detector) + np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int) , self.EM_gain)
                         else:
-                            print(np.max(cube_detector * stack),np.nanmax(cube_detector * stack))
+                            # print(np.max(cube_detector * stack),np.nanmax(cube_detector * stack))
                             # cube_detector[:,:,:]+= np.random.poisson(cube_detector)
                             N_poisson = np.random.poisson(cube_detector * stack)           # Somme des Poisson sur la stack
                             N_CIC = np.random.binomial(stack, self.CIC_charge, cube_detector.shape) # Somme des CIC sur la stack
@@ -1256,7 +1276,7 @@ class Observation:
             
                 if IFS : 
                     n_wave=size[0]
-                    cube_detector = create_fits_cube(cube_size=(size[1], size[1], n_wave), pixel_scale=self.pixel_scale, wave_range=(wave_min,wave_max),continuum_flux=spectra* int(self.exposure_time),continuum_fwhm=self.PSF_source, line_flux=self.Signal_el*0, line_center=self.wavelength, line_fwhm=self.Line_width, line_spatial_fwhm=self.PSF_source)
+                    cube_detector = create_fits_cube(cube_size=(size[1], size[1], n_wave), pixel_scale=self.pixel_scale, wave_range=(wave_min,wave_max),continuum_flux=spectra* int(self.exposure_time),continuum_fwhm=self.Size_source, line_flux=self.Signal_el*0, line_center=self.wavelength, line_fwhm=self.Line_width, line_spatial_fwhm=self.Size_source)
                     cube_detector += self.sky + self.Dark_current_f  + self.extra_background * int(self.exposure_time)/3600 
                     if source_image=="Source" :
                         return cube_detector, cube_detector
@@ -1269,13 +1289,21 @@ class Observation:
                     # if source_image:
                     if source_image=="Convolved source" :
                         return cube_detector, cube_detector
+                        
+
                     Nx, Ny, Nλ = cube_detector.shape
                     # n3 = int(np.sqrt(60*60*self.instruments_dict[self.instrument]["FOV_size"])/self.Slitwidth)
-                    reduction = int(self.Slitwidth/self.pixel_scale)
+                    reduction = self.Slitwidth/self.pixel_scale
                     new_Nx = Nx // reduction  # Nouvelle taille en X
-                    cube_reduced = np.array([np.nanmean(cube_detector[i * reduction:(i + 1) * reduction, :, :], axis=0) for i in range(new_Nx)])
+                    new_Nx = int(Nx * self.pixel_scale/ self.Slitwidth)
+                    cube_reduced = np.array([np.nanmean(cube_detector[int(i * reduction):int((i + 1) * reduction), :, :], axis=0) for i in range(new_Nx)])
                     cube_detector = np.array(cube_reduced)  # Remettre en array numpy
                     cube_detector_stack = cube_detector.copy()
+            
+                    if source_image=="SNR" : # TODO need to be sure we are good for the SNR which sqrt(50)
+                        SNR_all = (cube_detector - np.nanmin(cube_detector)) / np.ptp(cube_detector - np.nanmin(cube_detector)) * self.snrs_per_pixel[self.i] #/ np.sqrt(source_im + source_background + self.CIC_charge + self.RN**2)
+                        SNR_single = SNR_all / np.sqrt(np.ones(50) * self.N_images_true)[self.i]
+                        return SNR_single, SNR_all
                     if (self.EM_gain>1) :
                         if self.counting_mode : 
                             list_im =[(np.random.gamma(np.random.poisson(cube_detector)  + np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int) , self.EM_gain)) + np.random.normal(0, self.RN, cube_detector.shape) for i in range(int(stack))]
@@ -1288,7 +1316,7 @@ class Observation:
                             else:
                                 cube_detector_stack[:,:,:] = np.mean([(np.random.gamma(np.random.poisson(cube_detector)  + np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int) , self.EM_gain)) + np.random.normal(0, self.RN, cube_detector.shape) for i in range(int(stack))],axis=0)                        
                         cube_detector[:,:,:] += np.random.gamma( np.random.poisson(cube_detector) + np.array(np.random.rand(*cube_detector.shape)<self.CIC_charge,dtype=int) , self.EM_gain)
-                    else:
+                    else: # TODO weird that cube_detector_stack does not depend on exposure time. it only depends on stack
                         cube_detector_stack[:,:,:] = np.random.poisson(cube_detector*int(stack)) / int(stack)  + np.random.normal(0, self.RN/np.sqrt(int(stack)), cube_detector.shape) if int(stack)>0 else 0
                         cube_detector[:,:,:]+= np.random.poisson(cube_detector)
                         # cube_detector_stack[:,:,:] = np.mean(np.random.poisson(np.repeat(cube_detector[:, :,:, np.newaxis], int(stack), axis=3)),axis=3)
@@ -1329,7 +1357,7 @@ class Observation:
 
         source_im_only_source =  source_im  * int(self.exposure_time)
         if (source_image=="Source") | (source_image=="Convolved source") :
-            print(source_im_only_source.shape)
+            # print(source_im_only_source.shape)
             return source_im_only_source, source_im_only_source
         source_background = self.sky_im  * int(self.exposure_time) + self.Dark_current_f  + self.extra_background * int(self.exposure_time)/3600 
         source_im =  source_background +  source_im_only_source
