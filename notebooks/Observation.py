@@ -497,18 +497,19 @@ class Observation:
 
 
         if self.SNR_res=="per pix":
-          self.resolution_element = 1
+          self.number_pixels_used = 1
         elif self.SNR_res=="per Res elem": # is that true ? when not IFS, the SNR won't get bigger than the slit , the rest will be cut
-            self.resolution_element = np.sqrt(self.elem_size)  
+            
+            self.number_pixels_used = self.elem_size
             # if self.IFS:
-            #     self.resolution_element = np.sqrt(self.elem_size)  
+            #     self.number_pixels_used = np.sqrt(self.elem_size)  
             # else:
-            #     self.resolution_element = np.sqrt(np.minimum(self.elem_size,self.Slitlength*self.pixel_scale*self.Slitwidth*self.pixel_scale)) 
+            #     self.number_pixels_used = np.sqrt(np.minimum(self.elem_size,self.Slitlength*self.pixel_scale*self.Slitwidth*self.pixel_scale)) 
         elif self.SNR_res=="per Source":
             if self.IFS:
-                self.resolution_element = np.sqrt(self.source_size)  
+                self.number_pixels_used = self.source_size  #TODO should add the number of slices here
             else:
-                self.resolution_element =np.sqrt(np.minimum(self.source_size,self.Slitlength*self.pixel_scale*self.Slitwidth*self.pixel_scale)) #should normally convolve should and slit here
+                self.number_pixels_used = np.minimum(self.source_size,self.Slitlength*self.pixel_scale*self.Slitwidth*self.pixel_scale) #should normally convolve should and slit here
 
 
         red, blue, violet, yellow, green, pink, grey  = '#E24A33','#348ABD','#988ED5','#FBC15E','#8EBA42','#FFB5B8','#777777'
@@ -518,7 +519,7 @@ class Observation:
         self.CIC_noise = np.sqrt(self.CIC_charge * self.ENF) 
         self.Dark_current_f = self.Dark_current * self.exposure_time / 3600 # e/pix/frame
         self.Dark_current_noise =  np.sqrt(self.Dark_current_f * self.ENF)
-        
+        self.effective_area =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
         # For now we put the regular QE without taking into account the photon kept fracton, because then infinite loop. 
         # Two methods to compute it: interpolate_optimal_threshold & compute_optimal_threshold
         self.pixel_size_arcsec = self.pixel_scale
@@ -529,11 +530,11 @@ class Observation:
         if (self.counting_mode) : #& (self.EM_gain>=1)  Normaly if counting mode is on EM_gain is >1
             if self.spectro:
                 if  (self.SNR_res!="per Source"):
-                    self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str  * self.dispersion
+                    self.factor_CU2el =  self.effective_area * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str  * self.dispersion
                 else:
-                    self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.Size_source  * self.arcsec2str  * self.dispersion
+                    self.factor_CU2el =  self.effective_area  * self.Size_source  * self.arcsec2str  * self.dispersion
             else:
-                self.factor_CU2el =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100) 
+                self.factor_CU2el =  self.effective_area
 
             self.sky = self.Sky_CU*self.factor_CU2el*self.exposure_time  # el/pix/frame
             self.Sky_noise_pre_thresholding = np.sqrt(self.sky * self.ENF) 
@@ -546,6 +547,7 @@ class Observation:
         # The faction of detector lost by cosmic ray masking (taking into account ~5-10 impact per seconds and around 2000 pixels loss per impact (0.01%))
         self.cosmic_ray_loss = np.minimum(self.cosmic_ray_loss_per_sec*(self.exposure_time+self.readout_time/2),1)
         self.QE_efficiency = self.Photon_fraction_kept * self.QE
+        self.effective_area =  self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
         # TODO verify that indeed it should not depend on self.pixel_scale**2 !! We still see some dependancy, why that??
         # if self.IFS:
         #     if  (self.SNR_res!="per Source"):
@@ -558,17 +560,17 @@ class Observation:
         self.nfibers = 1
         # TODO need to verify that the evolution the sky and signal makes sense with nfibers... Maybe this has been solved
         
-        if self.spectro:
-            self.factor_CU2el_sky = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.Slitwidth * self.arcsec2str  * self.dispersion *self.pixel_scale**2
-            # self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,np.minimum(self.Size_source,self.PSF_RMS_det)) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+        if self.spectro: # previously was multiplying by self.nfibers *
+            self.factor_CU2el_sky =  self.effective_area  * self.Slitwidth * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+            # self.factor_CU2el =  self.effective_area  * np.minimum(self.Slitwidth,np.minimum(self.Size_source,self.PSF_RMS_det)) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
             if  (self.SNR_res!="per Source"):
-                self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * np.minimum(self.Slitwidth,self.Size_source) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+                self.factor_CU2el =  self.effective_area  * np.minimum(self.Slitwidth,self.Size_source) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
             else:
-                self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.Size_source * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+                self.factor_CU2el = self.effective_area  * self.Size_source * self.arcsec2str  * self.dispersion *self.pixel_scale**2
         else: 
             # TODO for imager that already have some throughput, integrate over the throughput curve.
-            self.factor_CU2el = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)     * self.pixel_scale**2 * self.Throughput_FWHM   * self.arcsec2str  # * self.dispersion * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str
-            self.factor_CU2el_sky = self.nfibers * self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)  * self.pixel_scale**2 * self.Throughput_FWHM  * self.arcsec2str  # * self.dispersion  * self.Slitwidth 
+            self.factor_CU2el =  self.effective_area     * self.pixel_scale**2 * self.Throughput_FWHM   * self.arcsec2str  # * self.dispersion * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str
+            self.factor_CU2el_sky = self.effective_area  * self.pixel_scale**2 * self.Throughput_FWHM  * self.arcsec2str  # * self.dispersion  * self.Slitwidth 
         self.sky = self.Sky_CU*self.factor_CU2el_sky*self.exposure_time  # el/pix/frame
         self.Sky_noise = np.sqrt(self.sky * self.ENF) 
             
@@ -592,12 +594,12 @@ class Observation:
         if self.spectro:
             self.lambda_stack = 1 
         self.N_resol_element_A = self.lambda_stack 
-        self.factor =   self.resolution_element * np.sqrt(self.N_resol_element_A) * np.sqrt(self.N_images_true)
+        self.factor =   np.sqrt(self.number_pixels_used) * np.sqrt(self.N_resol_element_A) * np.sqrt(self.N_images_true)
         self.Signal_resolution = self.Signal_el * self.factor**2# el/N exposure/resol
         self.signal_noise_nframe = self.signal_noise * self.factor
         self.Total_noise_final = self.factor*np.sqrt(self.signal_noise**2 + self.Dark_current_noise**2  + self.Additional_background_noise**2 + self.Sky_noise**2 + self.CIC_noise**2 + self.RN_final**2   ) #e/  pix/frame
         self.SNR = self.Signal_resolution / self.Total_noise_final
-        self.snrs_per_pixel = self.Signal_el * self.N_images_true /   (self.Total_noise_final / self.resolution_element / np.sqrt(self.N_resol_element_A)) 
+        self.snrs_per_pixel = self.Signal_el * self.N_images_true /   (self.Total_noise_final / np.sqrt(self.number_pixels_used) / np.sqrt(self.N_resol_element_A)) 
         
         if type(self.Total_noise_final + self.Signal_resolution) == np.float64:
             n=0
@@ -607,11 +609,11 @@ class Observation:
             for name in ["signal_noise","Dark_current_noise", "Additional_background_noise","Sky_noise", "CIC_noise", "RN_final","Signal_resolution","Signal_el","sky","CIC_charge","Dark_current_f","RN","Additional_background"]:
                 setattr(self, name, getattr(self,name)*np.ones(n))
         self.factor = self.factor*np.ones(n) if type(self.factor)== np.float64 else self.factor
-        # print(type(self.resolution_element))
-        if type(self.resolution_element) == np.float64 : 
-            self.noises_per_exp = self.resolution_element * np.array([self.signal_noise,  self.Dark_current_noise,  self.Sky_noise, self.RN_final, self.CIC_noise, self.Additional_background_noise, np.sqrt(self.Signal_el)]).T
+        # print(type(self.number_pixels_used))
+        if type(self.number_pixels_used) == np.float64 : 
+            self.noises_per_exp = np.sqrt(self.number_pixels_used) * np.array([self.signal_noise,  self.Dark_current_noise,  self.Sky_noise, self.RN_final, self.CIC_noise, self.Additional_background_noise, np.sqrt(self.Signal_el)]).T
         else:
-            self.noises_per_exp = (self.resolution_element * np.array([self.signal_noise,  self.Dark_current_noise,  self.Sky_noise, self.RN_final, self.CIC_noise, self.Additional_background_noise, np.sqrt(self.Signal_el)])).T
+            self.noises_per_exp = (np.sqrt(self.number_pixels_used) * np.array([self.signal_noise,  self.Dark_current_noise,  self.Sky_noise, self.RN_final, self.CIC_noise, self.Additional_background_noise, np.sqrt(self.Signal_el)])).T
         self.noises = np.array([self.signal_noise*self.factor,  self.Dark_current_noise*self.factor,  self.Sky_noise*self.factor, self.RN_final*self.factor, self.CIC_noise*self.factor, self.Additional_background_noise*self.factor, self.Signal_resolution]).T
         self.electrons_per_pix =  np.array([self.Signal_el,  self.Dark_current_f,  self.sky,  0*self.RN_final, self.CIC_charge, self.Additional_background]).T
         self.names = ["Signal","Dark current", "Sky", "Read noise","CIC", "Extra background"]
@@ -643,7 +645,7 @@ class Observation:
         # self.Throughput_curve=np.nan
         # print(self.acquisition_time, self.exposure_time[self.i] , self.readout_time)
         # print(self.N_images_true[self.i], self.N_images[self.i] , self.cosmic_ray_loss[self.i])
-        # print("E2E troughput",int((100*self.QE_efficiency * self.Throughput * self.Atmosphere)[self.i]) , "\nFrame number=",self.N_images_true[self.i],"\nResolElem=",self.resolution_element, "\nSignal=",self.Signal_resolution[self.i])
+        # print("E2E troughput",int((100*self.QE_efficiency * self.Throughput * self.Atmosphere)[self.i]) , "\nFrame number=",self.N_images_true[self.i],"\nResolElem=",self.number_pixels_used, "\nSignal=",self.Signal_resolution[self.i])
         # print("Sigma=5")
         # print("Flux (e/rsol/Nframe), σ==5 :",self.signal_nsig_e_resol_nframe[self.i])
         # print("Flux LU, σ==5 : %0.1E"%(self.signal_nsig_LU[self.i]))
@@ -652,7 +654,7 @@ class Observation:
         # print("Flux	point source :",self.point_source_5s[self.i])
         # print("factor=",self.factor[self.i])
         # print("N_images_true=",np.sqrt(self.N_images_true)[self.i] )
-        # print("resolution_element=", self.resolution_element)
+        # print("resolution_element=", self.number_pixels_used)
         # print("N_resol_element_A=",np.sqrt(self.N_resol_element_A))
         # print("lambda_stack=",self.lambda_stack)
         # print("dispersion=",self.dispersion)
@@ -670,8 +672,8 @@ class Observation:
         exposure_time, Sky_CU, acquisition_time, Signal, EM_gain, RN, CIC_charge, Dark_current, readout_time, smearing, temperature, PSF_RMS_det, PSF_RMS_mask, QE, extra_background, cosmic_ray_loss_per_sec
         """
         fig, axes= plt.subplots(4, 1, figsize=(12, 8), sharex=True) # fig, (ax1, ax2,ax3) = plt.subplots(3, 1, figsize=(12, 7), sharex=True) #figsize=(9, 5.5)
-        ax1, ax2,ax3, ax4  = axes
-        labels = ['%s: %0.3f (%0.1f%%)'%(name, self.resolution_element *self.electrons_per_pix[self.i,j],100*self.electrons_per_pix[self.i,j]/np.nansum(self.electrons_per_pix[self.i,:])) for j,name in enumerate(self.names)]
+        ax1, ax2,ax3, ax4  = axes # TODO maybe add a sqrt here
+        labels = ['%s: %0.3f (%0.1f%%)'%(name, self.number_pixels_used *self.electrons_per_pix[self.i,j],100*self.electrons_per_pix[self.i,j]/np.nansum(self.electrons_per_pix[self.i,:])) for j,name in enumerate(self.names)]
 
 
 
@@ -689,8 +691,8 @@ class Observation:
         # ax2 
         ax2.grid(False)
         # self.stackplot1 = ax2.stackplot(getattr(self,x),  np.array(self.electrons_per_pix).T[:,:],alpha=0.7,colors=self.colors,labels=labels)
-        self.stackplot1 = ax2.stackplot(getattr(self,x),  self.resolution_element**2 * np.array(self.electrons_per_pix).T[:,:],alpha=0.7,colors=self.colors,labels=labels)
-        ax2.legend(loc='upper left',title="Overall background: %0.3f (%0.1f%%)"%( self.resolution_element**2 * np.nansum(self.electrons_per_pix[self.i,1:]),100*np.nansum(self.electrons_per_pix[self.i,1:])/np.nansum(self.electrons_per_pix[self.i,:])))
+        self.stackplot1 = ax2.stackplot(getattr(self,x),  self.number_pixels_used * np.array(self.electrons_per_pix).T[:,:],alpha=0.7,colors=self.colors,labels=labels)
+        ax2.legend(loc='upper left',title="Overall background: %0.3f (%0.1f%%)"%( self.number_pixels_used * np.nansum(self.electrons_per_pix[self.i,1:]),100*np.nansum(self.electrons_per_pix[self.i,1:])/np.nansum(self.electrons_per_pix[self.i,:])))
         ax2.set_xlim((getattr(self,x).min(),getattr(self,x).max()))
 
         # ax3
@@ -1126,6 +1128,7 @@ class Observation:
         a_ = special.erf((length - (np.linspace(0,nsize,nsize) - nsize/2)) / np.sqrt(2 * Rx ** 2))
         b_ = special.erf((length + (np.linspace(0,nsize,nsize) - nsize/2)) / np.sqrt(2 * Rx ** 2))
         slit_profile = (a_ + b_) / np.ptp(a_ + b_)  # Shape: (100,)
+        slit_profile = (slit_profile - np.nanmin(slit_profile) )/ np.nanmax(slit_profile - np.nanmin(slit_profile) )
 
         if ("Spectra" in source) | ("Salvato" in source) | ("COSMOS" in source)| ("Blackbody" in source)| ("kpc spiral galaxy" in source)| ("Gaussian" in source)| ("cube" in source):
             # TODO should I replace PSF_x by PSF_x**2+Rx**2???? Issue with the normilization maybe... Need to compare to Bruno's code
@@ -1134,7 +1137,7 @@ class Observation:
                 if ("baseline" in source.lower()) | (("UVSpectra=" in source) & (self.wavelength>300)): 
                     spectra = flux* Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2, PSF_λ)/ Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2, self.PSF_lambda_pix**2/(PSF_λ**2 + self.PSF_lambda_pix**2)).sum()
                     spectra *= atm_qe_normalized_shape   
-                    source_im =  np.outer(spectra,spatial_profile ).T /Gaussian1D.evaluate(np.arange(size[1]),  1,  50, Rx**2/(PSF_x**2+Rx**2)).sum()
+                    source_im =  np.outer(spectra,spatial_profile*slit_profile ).T /Gaussian1D.evaluate(np.arange(size[1]),  1,  50, Rx**2/(PSF_x**2+Rx**2)).sum()
                 elif "blackbody" in source.lower():
                     temperature = int(re.search(r'\d+', source).group()) * u.K
                     blackbody_spectra = BlackBody(temperature=temperature/(1+self.Redshift))(wavelengths * u.nm)
@@ -1144,7 +1147,7 @@ class Observation:
                         equivalencies=u.spectral_density(wavelengths * u.nm))
                     # Ajuster le spectre du corps noir pour correspondre au flux moyen donné sur le détecteur
                     spectra = atm_qe_normalized_shape  * (flux_in_erg.value/np.mean(flux_in_erg.value)) * flux    #* self.QE*self.Atmosphere
-                    source_im =  np.outer(spectra,spatial_profile ).T /Gaussian1D.evaluate(np.arange(nsize),  1,  nsize/2, Rx**2/(PSF_x**2+Rx**2)).sum()
+                    source_im =  np.outer(spectra,spatial_profile*slit_profile ).T /Gaussian1D.evaluate(np.arange(nsize),  1,  nsize/2, Rx**2/(PSF_x**2+Rx**2)).sum()
                 elif ("cube" in source):
                     n_wave=size[0]
                     if os.path.isfile("../data/Emission_cube/"+ source.split("-")[0] + ".fits"):
@@ -1175,7 +1178,7 @@ class Observation:
                     # print(cube_detector.min(),cube_detector.max(),np.argmax(cube_detector))
                     if IFS:
 
-                        if source_image=="Source (Flux / e-)" :
+                        if source_image=="Source" :
                             return self.Signal * cube_detector/ np.percentile(cube_detector,99.999) , self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)
                         cube_detector = self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)              #np.nanmax(cube_detector)
                         cube_spatial = np.array([gaussian_filter(cube_detector[:, :, i], sigma=Rx) for i in range(cube_detector.shape[2])])
@@ -1239,7 +1242,6 @@ class Observation:
                         cube_detector = self.Signal_el * cube_detector/ np.percentile(cube_detector,99.999)              #np.nanmax(cube_detector)
 
                         pre_im = np.mean(cube_detector[:,np.max([0,int(50-self.Slitwidth/self.pixel_scale/2+self.Δx)]):int(50+self.Slitwidth/self.pixel_scale/2 +self.Δx+1),:], axis=1)
-                        slit_profile = (slit_profile - np.nanmin(slit_profile) )/ np.nanmax(slit_profile - np.nanmin(slit_profile) )
                         source_im =  atm_qe_normalized_shape.T*(pre_im.T * slit_profile).T/int(self.exposure_time)
                         if "Source" in source_image:
                             return source_im  * int(self.exposure_time) , source_im  * int(self.exposure_time)
@@ -1300,7 +1302,7 @@ class Observation:
                     spectra = gaussian_filter1d(f(wavelengths),  self.diffuse_spectral_resolution/min_interval/2.35) * atm_qe_normalized_shape      #* self.QE*self.Atmosphere
                     spatial_profile =  Gaussian1D.evaluate(np.arange(nsize),  1,  nsize/2, PSF_x) #/Gaussian1D.evaluate(np.arange(nsize),  1,  nsize/2, PSF_x).sum()
                     subim = np.zeros((nsize2,nsize))
-                    source_im =  np.outer(spectra,spatial_profile ).T /Gaussian1D.evaluate(np.arange(nsize),  1,  nsize/2, Rx**2/(PSF_x**2+Rx**2)).sum()
+                    source_im =  np.outer(spectra,spatial_profile*slit_profile ).T /Gaussian1D.evaluate(np.arange(nsize),  1,  nsize/2, Rx**2/(PSF_x**2+Rx**2)).sum()
     
 
                 if np.isfinite(length) & (np.ptp(a_ + b_)>0):
