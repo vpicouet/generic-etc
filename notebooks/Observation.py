@@ -114,7 +114,7 @@ def convert_fits_cube(input_fits, output_fits, output_shape, wave_range_nm, spat
 
 
 def convert_LU2ergs(LU,wave_nm,Redshift): #TODO here it should not be 200 nm but 1216 so we need indeed to account for the Redshift!!!
-    wave =wave_nm * 1e-7 #/ (1+Redshift) It gives the good result from mature paper : at z = 2.35, 1 LU/˚A is 1 ph cm-2 s-1 sr-1˚A-1 = 1.2 ˆ 10-22 erg cm-2 s-1˚A-1 
+    wave =wave_nm * 1e-7 #/ (1+Redshift) It gives the good result from mature paper : at z =fwhm_sigma_ratio, 1 LU/˚A is 1 ph cm-2 s-1 sr-1˚A-1 = 1.2 ˆ 10-22 erg cm-2 s-1˚A-1 
     Energy = 6.62e-27 * 3e10 / wave
     angle =  np.pi / (180 * 3600)
     flux_ergs = LU * Energy * angle * angle
@@ -244,7 +244,7 @@ def generate_gaussian_galaxy(amplitude, redshift, platescale, PSF_RMS, size_kpc)
     xx, yy = np.meshgrid(x, y)
     r = np.sqrt(xx**2 + yy**2)  # Radial distance from the center
     # Create a Gaussian profile for the galaxy
-    galaxy = np.exp(-r**2 / (2 * (angular_size_arcsec / 2.355)**2))  # Gaussian profile
+    galaxy = np.exp(-r**2 / (2 * (angular_size_arcsec /2.355)**2))  # Gaussian profile
     # Normalize the galaxy to conserve total energy
     galaxy_sum_initial = np.max(galaxy) * 100  # Approximate normalization factor
     galaxy *= amplitude / galaxy_sum_initial  # Normalize so that the peak is equal to the amplitude
@@ -300,8 +300,8 @@ def generate_spiral_galaxy(amplitude,redshift, pixel_scale, PSF_RMS,size_kpc,kpc
     r = np.sqrt(xx**2 + yy**2)
     theta = np.arctan2(yy, xx)
     
-    core = np.exp(-r**2 / (2 * (angular_size_pix / 5 / 2.355)**2))
-    spiral = np.exp(-r**2 / (2 * (angular_size_pix / 2.355)**2)) * (1 + intensity * np.sin(2 * theta + r * 20 / angular_size_pix))
+    core = np.exp(-r**2 / (2 * (angular_size_pix / 5 /2.355)**2))
+    spiral = np.exp(-r**2 / (2 * (angular_size_pix /2.355)**2)) * (1 + intensity * np.sin(2 * theta + r * 20 / angular_size_pix))
     galaxy = core + spiral
 
     # Normalize the galaxy to conserve total energy
@@ -327,7 +327,7 @@ def generate_filament(amplitude, redshift, pixel_scale, PSF_RMS, size_kpc, size_
     y = np.linspace(-pixel_scale * final_image_size[1] / 2, pixel_scale * final_image_size[1] / 2, final_image_size[1])
     xx, yy = np.meshgrid(x, y)
     diagonal = (xx - yy) / np.sqrt(2)
-    filament = np.exp(-diagonal**2 / (2 * (angular_size_arcsec / 2.355)**2))
+    filament = np.exp(-diagonal**2 / (2 * (angular_size_arcsec /2.35)**2))
     filament_sum_initial = np.max(filament) * 100
     filament *= amplitude / filament_sum_initial
     if size_kpc is not None:
@@ -451,6 +451,7 @@ class Observation:
 
         self.initilize(IFS=IFS)
     
+    # TODO delete all the *= that actually multiply again the signal
     def initilize(self,IFS):
         self.precise = True
         # self.Signal = Gaussian2D(amplitude=self.Signal,x_mean=0,y_mean=0,x_stddev=self.Size_source,y_stddev=self.Line_width,theta=0)(self.Δx,self.Δλ)
@@ -461,7 +462,7 @@ class Observation:
         # Simple hack to me able to use UV magnitudes (not used for the ETC)
         if np.max([self.Signal])>1:
             self.Signal = 10**(-(self.Signal-20.08)/2.5)*2.06*1E-16
-        #TODO be sure we account for potential 2.35 ratio here
+        #TODO be sure we account for potentialfwhm_sigma_ratio ratio here
         #convolve input flux by instrument PSF
         if type(self.Slitlength) == np.float64:
             if (self.Slitlength==self.Slitwidth):
@@ -477,8 +478,8 @@ class Observation:
         # print(self.IFS)
         if ~np.isnan(self.Slitwidth).all()  & (~self.IFS):  #& (self.precise) # & (self.SNR_res!="per Source")
             # assess flux fraction going through slit
-            self.flux_fraction = (1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1
-            self.flux_fraction *= (1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1
+            # self.flux_fraction = ((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)     *    ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
+            self.flux_fraction = ((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)     *    ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
         else:
             self.flux_fraction = 1
         self.flux_fraction_slit_applied = self.flux_fraction
@@ -487,29 +488,29 @@ class Observation:
         
         
         self.PSF_lambda_pix = 10*self.wavelength / self.Spectral_resolution / self.dispersion
-
+        fwhm_sigma_ratio =1.0 # 2.355
         if self.spectro:
-            self.source_size =  (self.Size_source * 2.35 /self.pixel_scale) * (self.Line_width / self.dispersion)
-            self.elem_size = (self.PSF_RMS_det * 2.35 /self.pixel_scale) * (self.PSF_lambda_pix)
+            # print(self.Size_source,self.pixel_scale,self.Line_width,self.dispersion,self.Line_width,self.Bandwidth,self.dispersion)
+            self.source_size =  np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)    #(self.Line_width / self.dispersion) 
+            self.elem_size =  np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale         * np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
+            # self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale)      * (self.Line_width / self.dispersion) 
+            # self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale)         * (self.PSF_lambda_pix)
+            self.pixels_total_source =  self.source_size  * (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
         else:
-            self.source_size =  (self.Size_source * 2.35 /self.pixel_scale) **2
-            self.elem_size = (self.PSF_RMS_det * 2.35 /self.pixel_scale) **2
+            self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale) **2
+            self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale) **2
 
-
+        # print(self.IFS,self.elem_size,self.source_size, self.pixels_total_source)
+        # print(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale, np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2),( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1),     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      , np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)  , (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1) , )
         if self.SNR_res=="per pix":
           self.number_pixels_used = 1
         elif self.SNR_res=="per Res elem": # is that true ? when not IFS, the SNR won't get bigger than the slit , the rest will be cut
-            
-            self.number_pixels_used = self.elem_size
-            # if self.IFS:
-            #     self.number_pixels_used = np.sqrt(self.elem_size)  
-            # else:
-            #     self.number_pixels_used = np.sqrt(np.minimum(self.elem_size,self.Slitlength*self.pixel_scale*self.Slitwidth*self.pixel_scale)) 
-        elif self.SNR_res=="per Source":
             if self.IFS:
-                self.number_pixels_used = self.source_size  #TODO should add the number of slices here
+                self.number_pixels_used = self.elem_size
             else:
-                self.number_pixels_used = np.minimum(self.source_size,self.Slitlength*self.pixel_scale*self.Slitwidth*self.pixel_scale) #should normally convolve should and slit here
+                self.number_pixels_used = self.elem_size
+        elif self.SNR_res=="per Source":
+            self.number_pixels_used = self.pixels_total_source
 
 
         red, blue, violet, yellow, green, pink, grey  = '#E24A33','#348ABD','#988ED5','#FBC15E','#8EBA42','#FFB5B8','#777777'
@@ -549,44 +550,51 @@ class Observation:
         self.QE_efficiency = self.Photon_fraction_kept * self.QE
         self.effective_area =  self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
         # TODO verify that indeed it should not depend on self.pixel_scale**2 !! We still see some dependancy, why that??
-        # if self.IFS:
-        #     if  (self.SNR_res!="per Source"):
-        #         self.nfibers = np.maximum(1,  (self.PSF_RMS_det * 2.35) / self.Slitwidth) # need to understand why we use slit width here!!
-        #     else:
-        #         self.nfibers = np.maximum(1,  (self.Size_source * 2.35) / self.Slitwidth) # need to understand why we use slit width here!!
-        #     # self.nfibers = np.sqrt((self.PSF_RMS_det * 2.35)**2+self.Slitwidth**2)/(self.PSF_RMS_det * 2.35)
-        # else: # Because for IFS we keep all the flux (what does not enter a fiber will enter the next one). should normally account for a fill factor but this could appear in throughput
-        #     self.nfibers = 1
+
         self.nfibers = 1
         # TODO need to verify that the evolution the sky and signal makes sense with nfibers... Maybe this has been solved
-        
+        self.source_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *          (self.Size_source   if self.IFS==3 else   np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitwidth)   )
+        self.slit_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *          (self.Size_source   if self.IFS==3 else   self.Slitwidth   )
+
+
         if self.spectro: # previously was multiplying by self.nfibers *
-            self.factor_CU2el_sky =  self.effective_area  * self.Slitwidth * self.arcsec2str  * self.dispersion *self.pixel_scale**2
-            # self.factor_CU2el =  self.effective_area  * np.minimum(self.Slitwidth,np.minimum(self.Size_source,self.PSF_RMS_det)) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
-            if  (self.SNR_res!="per Source"):
-                self.factor_CU2el =  self.effective_area  * np.minimum(self.Slitwidth,self.Size_source) * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+            method="mat"
+            if  method=="mat":
+                self.factor_CU2el = self.effective_area * self.arcsec2str * np.minimum(self.Line_width,self.Bandwidth)   *  self.source_size_arcsec_after_slit  / self.pixels_total_source  
+
+                self.factor_CU2el_sky = self.effective_area * self.arcsec2str *  np.minimum(self.Line_width,self.Bandwidth) *  self.slit_size_arcsec_after_slit / self.pixels_total_source  #it works only for a line emission and we take the total sky flux over the same pixels
             else:
-                self.factor_CU2el = self.effective_area  * self.Size_source * self.arcsec2str  * self.dispersion *self.pixel_scale**2
+                self.factor_CU2el = self.effective_area * self.arcsec2str *   np.minimum(self.Slitwidth,self.Size_source) * self.dispersion *self.pixel_scale**2
+                self.factor_CU2el_sky = self.effective_area * self.arcsec2str *    self.Slitwidth   * self.dispersion *self.pixel_scale**2
+                # self.factor_CU2el = self.effective_area * self.arcsec2str *   np.minimum(self.Slitwidth,np.minimum(self.Size_source,self.PSF_RMS_det)) * self.dispersion *self.pixel_scale**2
         else: 
             # TODO for imager that already have some throughput, integrate over the throughput curve.
-            self.factor_CU2el =  self.effective_area     * self.pixel_scale**2 * self.Throughput_FWHM   * self.arcsec2str  # * self.dispersion * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str
-            self.factor_CU2el_sky = self.effective_area  * self.pixel_scale**2 * self.Throughput_FWHM  * self.arcsec2str  # * self.dispersion  * self.Slitwidth 
+            self.factor_CU2el =   self.pixel_scale**2 * self.Throughput_FWHM 
+            self.factor_CU2el_sky = self.pixel_scale**2 * self.Throughput_FWHM  
+
+        self.N_images = self.acquisition_time*3600/(self.exposure_time + self.readout_time)
+        self.N_images_true = self.N_images * (1-self.cosmic_ray_loss)
+
+        #TODO Here should be sure about the calculation. There is another way of taking the entire flux if it is a line 
         self.sky = self.Sky_CU*self.factor_CU2el_sky*self.exposure_time  # el/pix/frame
         self.Sky_noise = np.sqrt(self.sky * self.ENF) 
-            
+        self.Signal_LU = convert_ergs2LU(self.Signal,self.wavelength, self.Redshift)
+        # if 1==0: # if line is totally resolved (for cosmic web for instance)
+        #     self.Signal_el =  self.Signal_LU*self.factor_CU2el*self.exposure_time * self.flux_fraction_slit_applied  / self.spectral_resolution_pixel # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
+        # else: # if line is unresolved for QSO for instance
+        self.Signal_el =  self.Signal_LU * self.factor_CU2el * self.exposure_time * self.flux_fraction_slit_applied   # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
+
+
+
+
+
+
         # TODO in counting mode, Photon_fraction_kept should also be used for CIC
         self.RN_final = self.RN  * self.RN_fraction_kept / self.EM_gain 
         self.Additional_background = self.extra_background/3600 * self.exposure_time# e/pix/exp
         self.Additional_background_noise = np.sqrt(self.Additional_background * self.ENF)
         
         # number of images taken during one field acquisition (~2h)
-        self.N_images = self.acquisition_time*3600/(self.exposure_time + self.readout_time)
-        self.N_images_true = self.N_images * (1-self.cosmic_ray_loss)
-        self.Signal_LU = convert_ergs2LU(self.Signal,self.wavelength, self.Redshift)
-        # if 1==0: # if line is totally resolved (for cosmic web for instance)
-        #     self.Signal_el =  self.Signal_LU*self.factor_CU2el*self.exposure_time * self.flux_fraction_slit_applied  / self.spectral_resolution_pixel # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
-        # else: # if line is unresolved for QSO for instance
-        self.Signal_el =  self.Signal_LU * self.factor_CU2el * self.exposure_time * self.flux_fraction_slit_applied   # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
         # print(self.flux_fraction_slit_applied)
 
         self.signal_noise = np.sqrt(self.Signal_el * self.ENF)     #el / resol/ N frame
@@ -609,7 +617,6 @@ class Observation:
             for name in ["signal_noise","Dark_current_noise", "Additional_background_noise","Sky_noise", "CIC_noise", "RN_final","Signal_resolution","Signal_el","sky","CIC_charge","Dark_current_f","RN","Additional_background"]:
                 setattr(self, name, getattr(self,name)*np.ones(n))
         self.factor = self.factor*np.ones(n) if type(self.factor)== np.float64 else self.factor
-        # print(type(self.number_pixels_used))
         if type(self.number_pixels_used) == np.float64 : 
             self.noises_per_exp = np.sqrt(self.number_pixels_used) * np.array([self.signal_noise,  self.Dark_current_noise,  self.Sky_noise, self.RN_final, self.CIC_noise, self.Additional_background_noise, np.sqrt(self.Signal_el)]).T
         else:
