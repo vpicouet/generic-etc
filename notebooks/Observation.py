@@ -435,7 +435,7 @@ def variable_smearing_kernels(image, smearing=1.5, SmearExpDecrement=50000):
 class Observation:
     @initializer
     # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13*0.9, exposure_time=50, counting_mode=False, Signal=1e-16, EM_gain=1400, RN=109, CIC_charge=0.005, Dark_current=0.08, Sky=10000, readout_time=1.5, extra_background = 0,acquisition_time = 2,smearing=0,i=25,plot_=False,temperature=-100,n=n,PSF_RMS_mask=5, PSF_RMS_det=8, QE = 0.45,cosmic_ray_loss_per_sec=0.005,Size_source=16,lambda_stack=1,Slitwidth=5,Bandwidth=200,Collecting_area=1,Δx=0,Δλ=0,pixel_scale=np.nan, Spectral_resolution=np.nan, dispersion=np.nan,Line_width=np.nan,wavelength=np.nan, pixel_size=np.nan,len_xaxis=50):#,photon_kept=0.7#, flight_background_damping = 0.9
-    def __init__(self, instruments=None, instrument="FIREBall-2 2025", Atmosphere=None, Throughput=None, exposure_time=None, counting_mode=False, Signal=None, EM_gain=None, RN=None, CIC_charge=None, Dark_current=None, Sky=None, readout_time=None, extra_background = None,acquisition_time = None,smearing=None,i=33,plot_=False,n=n,PSF_RMS_mask=None, PSF_RMS_det=None, QE = None,cosmic_ray_loss_per_sec=None,Size_source=None,lambda_stack=1,Slitwidth=None,Bandwidth=None,Collecting_area=None,Δx=None,Δλ=None,pixel_scale=None, Spectral_resolution=None, dispersion=None,Line_width=None,wavelength=None, pixel_size=None,len_xaxis=50,Slitlength=None,IFS=None, Redshift=None, Throughput_FWHM=None, SNR_res="per pix",spectrograph=True):#,photon_kept=0.7#, flight_background_damping = 0.9
+    def __init__(self, instruments=None, instrument="FIREBall-2 2025", Atmosphere=None, Throughput=None, exposure_time=None, counting_mode=False, Signal=None, EM_gain=None, RN=None, CIC_charge=None, Dark_current=None, Sky=None, readout_time=None, extra_background = None,acquisition_time = None,smearing=None,i=33,plot_=False,n=n,PSF_RMS_mask=None, PSF_RMS_det=None, QE = None,cosmic_ray_loss_per_sec=None,Size_source=None,lambda_stack=1,Slitwidth=None,Bandwidth=None,Collecting_area=None,Δx=None,Δλ=None,pixel_scale=None, Spectral_resolution=None, dispersion=None,Line_width=None,wavelength=None, pixel_size=None,len_xaxis=50,Slitlength=None,IFS=None, Redshift=None, Throughput_FWHM=None, SNR_res="per pix",spectrograph=True,test=True):#,photon_kept=0.7#, flight_background_damping = 0.9
     # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13, exposure_time=50, counting_mode=False, Signal=1e-17, EM_gain=1500, RN=40, CIC_charge=0.005, Dark_current=1, Sky=2e-18, readout_time=5, extra_background = 0.5,acquisition_time = 2,smearing=1.50,i=33,plot_=False,n=n,PSF_RMS_mask=2.5, PSF_RMS_det=3, QE = 0.4,cosmic_ray_loss_per_sec=0.005,Size_source=16,lambda_stack=0.21,Slitwidth=6,Bandwidth=160,Collecting_area=0.707,Δx=0,Δλ=0,pixel_scale=1.1, Spectral_resolution=1300, dispersion=0.21,Line_width=15,wavelength=200, pixel_size=13,len_xaxis=50,Slitlength=10):#,photon_kept=0.7#, flight_background_damping = 0.9
         """
         ETC calculator: computes the noise budget at the detector level based on instrument/detector parameters
@@ -492,7 +492,7 @@ class Observation:
         if self.spectro:
             # print(self.Size_source,self.pixel_scale,self.Line_width,self.dispersion,self.Line_width,self.Bandwidth,self.dispersion)
             self.source_size =  np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)    #(self.Line_width / self.dispersion) 
-            self.elem_size =  np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale         * np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
+            self.elem_size =  np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
             # self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale)      * (self.Line_width / self.dispersion) 
             # self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale)         * (self.PSF_lambda_pix)
             self.pixels_total_source =  self.source_size  * (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
@@ -558,8 +558,8 @@ class Observation:
 
 
         if self.spectro: # previously was multiplying by self.nfibers *
-            method="mat"
-            if  method=="mat":
+            # mat's solution provides a local optimum in dispersion that I don't get with my solution!!!
+            if  self.test:
                 self.factor_CU2el = self.effective_area * self.arcsec2str * np.minimum(self.Line_width,self.Bandwidth)   *  self.source_size_arcsec_after_slit  / self.pixels_total_source  
 
                 self.factor_CU2el_sky = self.effective_area * self.arcsec2str *  np.minimum(self.Line_width,self.Bandwidth) *  self.slit_size_arcsec_after_slit / self.pixels_total_source  #it works only for a line emission and we take the total sky flux over the same pixels
@@ -584,7 +584,10 @@ class Observation:
         # else: # if line is unresolved for QSO for instance
         self.Signal_el =  self.Signal_LU * self.factor_CU2el * self.exposure_time * self.flux_fraction_slit_applied   # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
 
-
+#         print(Effective_area E2E_throughtput Detector_gradual_Noise Detector_noise Spectral_extent Spatial_extent Pixels_involved
+# Max_exposures Frames_number
+# ENF
+# Sky_CU Signal_CU Signal_e-_res_tot Sky_e-_source_tot Source_e-_source_tot)
 
 
 
@@ -1050,7 +1053,7 @@ class Observation:
         self.Redshift=Redshift
         for key in list(self.instruments["Charact."]) + ["Signal_el","N_images_true","Dark_current_f","sky"]:
             if hasattr(self,key ):
-                if (type(getattr(self,key)) != float) & (type(getattr(self,key)) != int) &  (type(getattr(self,key)) != np.float64):
+                if (type(getattr(self,key)) != float) & (type(getattr(self,key)) != int) &  (type(getattr(self,key)) != np.float64) &  (type(getattr(self,key)) != bool):
                     setattr(self, key,getattr(self,key)[self.i])
                     # print(getattr(self,key))
 
