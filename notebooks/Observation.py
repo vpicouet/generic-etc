@@ -457,8 +457,9 @@ class Observation:
         # self.Signal = Gaussian2D(amplitude=self.Signal,x_mean=0,y_mean=0,x_stddev=self.Size_source,y_stddev=self.Line_width,theta=0)(self.Δx,self.Δλ)
         # print("\ni",self.i,"\nAtmosphere",self.Atmosphere, "\nThroughput=",self.Throughput,"\nSky=",self.Sky, "\nacquisition_time=",self.acquisition_time,"\ncounting_mode=",self.counting_mode,"\nSignal=",self.Signal,"\nEM_gain=",self.EM_gain,"RN=",self.RN,"CIC_charge=",self.CIC_charge,"Dark_current=",self.Dark_current,"\nreadout_time=",self.readout_time,"\nsmearing=",self.smearing,"\nextra_background=",self.extra_background,"\nPSF_RMS_mask=",self.PSF_RMS_mask,"\nPSF_RMS_det=",self.PSF_RMS_det,"\nQE=",self.QE,"\ncosmic_ray_loss_per_sec=",self.cosmic_ray_loss_per_sec,"\nlambda_stack",self.lambda_stack,"\nSlitwidth",self.Slitwidth, "\nBandwidth",self.Bandwidth,"\nSize_source",self.Size_source,"\nCollecting_area",self.Collecting_area)
         # print("\Collecting_area",self.Collecting_area, "\nΔx=",self.Δx,"\nΔλ=",self.Δλ, "\napixel_scale=",self.pixel_scale,"\nSpectral_resolution=",self.Spectral_resolution,"\ndispersion=",self.dispersion,"\nLine_width=",self.Line_width,"wavelength=",self.wavelength,"pixel_size=",self.pixel_size)
+      
+      
         self.spectro = self.spectrograph#False if np.isnan(self.instruments_dict[self.instrument]["dispersion"]) else True
-    
         # Simple hack to me able to use UV magnitudes (not used for the ETC)
         if np.max([self.Signal])>1:
             self.Signal = 10**(-(self.Signal-20.08)/2.5)*2.06*1E-16
@@ -483,6 +484,9 @@ class Observation:
         else:
             self.flux_fraction = 1
         self.flux_fraction_slit_applied = self.flux_fraction
+
+
+
         # if self.smearing>0:
         # self.Signal *= 1 - np.exp(-1/(self.smearing+1e-15)) - np.exp(-2/(self.smearing+1e-15))  - np.exp(-3/(self.smearing+1e-15))
         
@@ -490,28 +494,26 @@ class Observation:
         self.PSF_lambda_pix = 10*self.wavelength / self.Spectral_resolution / self.dispersion
         fwhm_sigma_ratio =1.0 # 2.355
         if self.spectro:
-            # print(self.Size_source,self.pixel_scale,self.Line_width,self.dispersion,self.Line_width,self.Bandwidth,self.dispersion)
-            self.source_size =  np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)    #(self.Line_width / self.dispersion) 
+            # self.source_size =  np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)    #(self.Line_width / self.dispersion) 
+            source_spatial_pixels = np.minimum(    self.Size_source * fwhm_sigma_ratio / self.pixel_scale,    self.Slitwidth / self.pixel_scale)
+            # source_spectral_pixels = np.minimum(self.Line_width, self.Bandwidth) / self.dispersion
+            source_spectral_pixels = np.maximum(1, np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)
+            self.source_size = np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale    * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
             self.elem_size =  np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
-            # self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale)      * (self.Line_width / self.dispersion) 
-            # self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale)         * (self.PSF_lambda_pix)
             self.pixels_total_source =  self.source_size  * (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
         else:
             self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale) **2
             self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale) **2
 
-        # print(self.IFS,self.elem_size,self.source_size, self.pixels_total_source)
-        # print(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale, np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2),( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1),     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      , np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)  , (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1) , )
         if self.SNR_res=="per pix":
           self.number_pixels_used = 1
         elif self.SNR_res=="per Res elem": # is that true ? when not IFS, the SNR won't get bigger than the slit , the rest will be cut
-            if self.IFS:
-                self.number_pixels_used = self.elem_size
-            else:
-                self.number_pixels_used = self.elem_size
+            self.number_pixels_used = np.maximum(1,self.elem_size)
         elif self.SNR_res=="per Source":
-            self.number_pixels_used = self.pixels_total_source
+            self.number_pixels_used = np.maximum(1,self.pixels_total_source)
 
+        # print(self.IFS,self.elem_size,self.source_size, self.pixels_total_source)
+        # print(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale, np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2),( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1),     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      , np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)  , (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1) , )
 
         red, blue, violet, yellow, green, pink, grey  = '#E24A33','#348ABD','#988ED5','#FBC15E','#8EBA42','#FFB5B8','#777777'
         self.colors= [red, violet, yellow  ,blue, green, pink, grey ]
@@ -553,19 +555,33 @@ class Observation:
 
         self.nfibers = 1
         # TODO need to verify that the evolution the sky and signal makes sense with nfibers... Maybe this has been solved
-        self.source_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *          (self.Size_source   if self.IFS==3 else   np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitwidth)   )
-        self.slit_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *          (self.Size_source   if self.IFS==3 else   self.Slitwidth   )
+        self.source_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *          (self.Size_source   if self.IFS else   np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitwidth)   )
+        self.slit_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *          (np.maximum(self.Size_source,self.Slitwidth)   if self.IFS else   self.Slitwidth   )
 
 
         if self.spectro: # previously was multiplying by self.nfibers *
             # mat's solution provides a local optimum in dispersion that I don't get with my solution!!!
             if  self.test:
-                self.factor_CU2el = self.effective_area * self.arcsec2str * np.minimum(self.Line_width,self.Bandwidth)   *  self.source_size_arcsec_after_slit  / self.pixels_total_source  
-
-                self.factor_CU2el_sky = self.effective_area * self.arcsec2str *  np.minimum(self.Line_width,self.Bandwidth) *  self.slit_size_arcsec_after_slit / self.pixels_total_source  #it works only for a line emission and we take the total sky flux over the same pixels
+                self.factor_CU2el = 1*self.effective_area * self.arcsec2str * np.minimum(self.Line_width,self.Bandwidth)   *  self.source_size_arcsec_after_slit  / self.pixels_total_source  
+                self.factor_CU2el_sky = 1*self.effective_area * self.arcsec2str *  np.minimum(self.Line_width,self.Bandwidth) *  self.slit_size_arcsec_after_slit / self.pixels_total_source  #it works only for a line emission and we take the total sky flux over the same pixels
             else:
-                self.factor_CU2el = self.effective_area * self.arcsec2str *   np.minimum(self.Slitwidth,self.Size_source) * self.dispersion *self.pixel_scale**2
-                self.factor_CU2el_sky = self.effective_area * self.arcsec2str *    self.Slitwidth   * self.dispersion *self.pixel_scale**2
+                # Largeur spectrale d’un pixel, bornée par la ligne (ou bande) et la dispersion
+                self.factor_CU2el = self.effective_area * self.arcsec2str  * np.minimum(self.Slitwidth, self.Size_source)  * np.minimum(self.Line_width, self.Bandwidth) / np.maximum(self.dispersion, np.minimum(self.Line_width, self.Bandwidth))  * self.pixel_scale
+                self.factor_CU2el_sky = self.effective_area * self.arcsec2str *  self.Slitwidth    * self.dispersion *self.pixel_scale     #np.minimum(self.Slitwidth,self.Bandwidth*self.pixel_scale/self.dispersion) 
+
+                lambda_width_per_pixel = self.dispersion  # [Å/pix]
+                # On limite cette largeur par la raie ou la bande
+                spectral_coverage = np.minimum(lambda_width_per_pixel, np.minimum(self.Line_width, self.Bandwidth))
+
+                self.factor_CU2el = self.effective_area * self.arcsec2str  * np.minimum(self.Slitwidth, self.Size_source)  * spectral_coverage * self.pixel_scale
+
+                sky_spectral_coverage = np.minimum(self.dispersion, self.Bandwidth)
+
+                self.factor_CU2el_sky = self.effective_area * self.arcsec2str  * self.Slitwidth * sky_spectral_coverage * self.pixel_scale
+
+
+
+                # TODO this one is totally wrong! when the slit width is infite at some point we get limited by the band width and increasing the dispersion does not increse the the sky exponentialle
                 # self.factor_CU2el = self.effective_area * self.arcsec2str *   np.minimum(self.Slitwidth,np.minimum(self.Size_source,self.PSF_RMS_det)) * self.dispersion *self.pixel_scale**2
         else: 
             # TODO for imager that already have some throughput, integrate over the throughput curve.
@@ -681,6 +697,7 @@ class Observation:
         Generate a plot of the evolution of the noise budget with one parameter:
         exposure_time, Sky_CU, acquisition_time, Signal, EM_gain, RN, CIC_charge, Dark_current, readout_time, smearing, temperature, PSF_RMS_det, PSF_RMS_mask, QE, extra_background, cosmic_ray_loss_per_sec
         """
+        fontsize = 8
         fig, axes= plt.subplots(4, 1, figsize=(12, 8), sharex=True) # fig, (ax1, ax2,ax3) = plt.subplots(3, 1, figsize=(12, 7), sharex=True) #figsize=(9, 5.5)
         ax1, ax2,ax3, ax4  = axes # TODO maybe add a sqrt here
         labels = ['%s: %0.3f (%0.1f%%)'%(name, self.number_pixels_used *self.electrons_per_pix[self.i,j],100*self.electrons_per_pix[self.i,j]/np.nansum(self.electrons_per_pix[self.i,:])) for j,name in enumerate(self.names)]
@@ -694,7 +711,7 @@ class Observation:
         # ax1.plot(getattr(self,x), np.nansum(self.noises[:,:-1],axis=1)/self.factor,label='%s: %0.2f (%0.1f%%)'%("Total",np.nansum(self.noises[self.i,-1])/self.factor[self.i],np.nansum(self.percents[:,self.i])),lw=lw,alpha=0.4,c="k")
         ax1.plot(getattr(self,x), np.sqrt(np.nansum(np.multiply(self.noises_per_exp[:,:-1],self.noises_per_exp[:,:-1]),axis=1)) ,label='%s: %0.2f'%("Quadratic sum",np.sqrt(np.nansum(np.multiply(self.noises_per_exp[self.i,:-1],self.noises_per_exp[self.i,:-1])))   ) ,lw=lw,alpha=0.4,c="k") #np.nansum(self.percents[:,self.i])
 
-        ax1.legend(loc='upper left')
+        ax1.legend(loc='upper left', fontsize=fontsize)
 
 
 
@@ -702,7 +719,7 @@ class Observation:
         ax2.grid(False)
         # self.stackplot1 = ax2.stackplot(getattr(self,x),  np.array(self.electrons_per_pix).T[:,:],alpha=0.7,colors=self.colors,labels=labels)
         self.stackplot1 = ax2.stackplot(getattr(self,x),  self.number_pixels_used * np.array(self.electrons_per_pix).T[:,:],alpha=0.7,colors=self.colors,labels=labels)
-        ax2.legend(loc='upper left',title="Overall background: %0.3f (%0.1f%%)"%( self.number_pixels_used * np.nansum(self.electrons_per_pix[self.i,1:]),100*np.nansum(self.electrons_per_pix[self.i,1:])/np.nansum(self.electrons_per_pix[self.i,:])))
+        ax2.legend(loc='upper left',title="Overall background: %0.3f (%0.1f%%)"%( self.number_pixels_used * np.nansum(self.electrons_per_pix[self.i,1:]),100*np.nansum(self.electrons_per_pix[self.i,1:])/np.nansum(self.electrons_per_pix[self.i,:])), fontsize=fontsize)
         ax2.set_xlim((getattr(self,x).min(),getattr(self,x).max()))
 
         # ax3
@@ -733,7 +750,7 @@ class Observation:
             ax4.plot([getattr(self,x).min(),getattr(self,x).min(),np.nan,getattr(self,x).max(),getattr(self,x).max()],[T2(self.pow_2018),T2(self.pow_best),np.nan,T2(self.pow_2018),T2(self.pow_best)],lw=lw,label="2018 flight (%0.1f) - most optimistic case (%0.1f)"%(self.pow_2018,self.pow_best),c="r",alpha=0.5)
         self.T2=T2
         self.ax4b = ax4b
-        ax4.legend(loc="upper right", fontsize=8,title=r"$\mathbf{Left}$: Ext. Source surface brightness, $\mathbf{Right}$: Point source power",title_fontsize=8 )
+        ax4.legend(loc="upper right", fontsize=fontsize,title=r"$\mathbf{Left}$: Ext. Source surface brightness, $\mathbf{Right}$: Point source power",title_fontsize=fontsize )
         ax4.set_ylabel(r"Log(erg/cm$^2$/s/asec$^2$)")
         ax4b.set_ylabel(r" Log(erg/s)")
 
