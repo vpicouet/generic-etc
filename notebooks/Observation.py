@@ -104,7 +104,7 @@ def convert_fits_cube(input_fits, output_fits, output_shape, wave_range_nm, spat
     input_cube = fits.open(input_fits)[0]
     
     resampled_cube = resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape,phys=phys)
-    resampled_cube = convert_LU2ergs(resampled_cube, np.mean(np.array(wave_range_nm)),redshift)
+    resampled_cube = convert_LU2ergs(resampled_cube, np.mean(np.array(wave_range_nm)))
 
     header = create_wcs_header(wave_range_nm, spatial_extent_arcsec, output_shape)
 
@@ -113,14 +113,14 @@ def convert_fits_cube(input_fits, output_fits, output_shape, wave_range_nm, spat
     return output_fits
 
 
-def convert_LU2ergs(LU,wave_nm,Redshift): #TODO here it should not be 200 nm but 1216 so we need indeed to account for the Redshift!!!
+def convert_LU2ergs(LU,wave_nm): #TODO here it should not be 200 nm but 1216 so we need indeed to account for the Redshift!!!
     wave =wave_nm * 1e-7 #/ (1+Redshift) It gives the good result from mature paper : at z =fwhm_sigma_ratio, 1 LU/˚A is 1 ph cm-2 s-1 sr-1˚A-1 = 1.2 ˆ 10-22 erg cm-2 s-1˚A-1 
     Energy = 6.62e-27 * 3e10 / wave
     angle =  np.pi / (180 * 3600)
     flux_ergs = LU * Energy * angle * angle
     return flux_ergs
 
-def convert_ergs2LU(flux_ergs,wave_nm,Redshift):
+def convert_ergs2LU(flux_ergs,wave_nm):
     wave =wave_nm * 1e-7 #/ (1+Redshift)
     Energy = 6.62e-27 * 3e10 / wave
     angle =    np.pi / (180 * 3600) 
@@ -477,10 +477,12 @@ class Observation:
                 self.Signal *= (erf(self.Line_width / (2 * np.sqrt(2) * self.spectro_resolution_A  )) )
             # print("Factor spatial and spectral",  (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) ),   (erf(self.Line_width / (2 * np.sqrt(2) * 10*self.wavelength/self.Spectral_resolution)) ))
         # print(self.IFS)
-        if ~np.isnan(self.Slitwidth).all()  & (~self.IFS):  #& (self.precise) # & (self.SNR_res!="per Source")
+        if ~np.isnan(self.Slitwidth).all(): #& (self.precise) # & (self.SNR_res!="per Source")
             # assess flux fraction going through slit
             # self.flux_fraction = ((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)     *    ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
-            self.flux_fraction = ((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)     *    ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
+            self.flux_fraction =   ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
+            if    (~self.IFS): 
+                self.flux_fraction *=((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)  
         else:
             self.flux_fraction = 1
         self.flux_fraction_slit_applied = self.flux_fraction
@@ -494,13 +496,18 @@ class Observation:
         self.PSF_lambda_pix = 10*self.wavelength / self.Spectral_resolution / self.dispersion
         fwhm_sigma_ratio =1.0 # 2.355
         if self.spectro:
-            # self.source_size =  np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)    #(self.Line_width / self.dispersion) 
-            source_spatial_pixels = np.minimum(    self.Size_source * fwhm_sigma_ratio / self.pixel_scale,    self.Slitwidth / self.pixel_scale)
-            # source_spectral_pixels = np.minimum(self.Line_width, self.Bandwidth) / self.dispersion
-            source_spectral_pixels = np.maximum(1, np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)
-            self.source_size = np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale    * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
-            self.elem_size =  np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      * np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
-            self.pixels_total_source =  self.source_size  * (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
+            source_spatial_pixels = np.maximum(1,np.minimum(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.pixel_scale, self.Slitwidth / self.pixel_scale))
+            # source_spatial_pixels = np.minimum(self.Size_source * fwhm_sigma_ratio / self.pixel_scale, self.Slitwidth / self.pixel_scale)
+            source_spectral_pixels = np.maximum(1, np.sqrt(self.PSF_lambda_pix**2 + (np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)**2))
+            self.source_size = np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale,1)    * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
+            self.pixels_total_source =  self.source_size  * ( np.ceil(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2)*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
+            # source_spectral_pixels = np.sqrt(    (np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)**2    + (self.pixel_scale)**2)
+            # self.source_size = np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
+            # self.pixels_total_source = self.source_size * (np.ceil(self.Size_source * fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
+
+
+            self.elem_size =  np.maximum(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale,1)      *  np.maximum(np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2),1)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
+            self.elem_size =  np.maximum(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale,1)      *  np.maximum(np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+self.PSF_lambda_pix**2),1)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
         else:
             self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale) **2
             self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale) **2
@@ -525,10 +532,9 @@ class Observation:
         self.effective_area =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
         # For now we put the regular QE without taking into account the photon kept fracton, because then infinite loop. 
         # Two methods to compute it: interpolate_optimal_threshold & compute_optimal_threshold
-        self.pixel_size_arcsec = self.pixel_scale
         # self.pixel_scale  = (self.pixel_scale*np.pi/180/3600) #go from arcsec/pix to str/pix 
         self.arcsec2str = (np.pi/180/3600)**2
-        self.Sky_CU = convert_ergs2LU(self.Sky, self.wavelength, self.Redshift) 
+        self.Sky_CU = convert_ergs2LU(self.Sky, self.wavelength)  
         # print(self.Sky_CU,self.Sky, self.wavelength, self.Redshift)
         if (self.counting_mode) : #& (self.EM_gain>=1)  Normaly if counting mode is on EM_gain is >1
             if self.spectro:
@@ -565,24 +571,34 @@ class Observation:
                 self.factor_CU2el = 1*self.effective_area * self.arcsec2str * np.minimum(self.Line_width,self.Bandwidth)   *  self.source_size_arcsec_after_slit  / self.pixels_total_source  
                 self.factor_CU2el_sky = 1*self.effective_area * self.arcsec2str *  np.minimum(self.Line_width,self.Bandwidth) *  self.slit_size_arcsec_after_slit / self.pixels_total_source  #it works only for a line emission and we take the total sky flux over the same pixels
             else:
-                # Largeur spectrale d’un pixel, bornée par la ligne (ou bande) et la dispersion
-                self.factor_CU2el = self.effective_area * self.arcsec2str  * np.minimum(self.Slitwidth, self.Size_source)  * np.minimum(self.Line_width, self.Bandwidth) / np.maximum(self.dispersion, np.minimum(self.Line_width, self.Bandwidth))  * self.pixel_scale
-                self.factor_CU2el_sky = self.effective_area * self.arcsec2str *  self.Slitwidth    * self.dispersion *self.pixel_scale     #np.minimum(self.Slitwidth,self.Bandwidth*self.pixel_scale/self.dispersion) 
 
-                lambda_width_per_pixel = self.dispersion  # [Å/pix]
-                # On limite cette largeur par la raie ou la bande
-                spectral_coverage = np.minimum(lambda_width_per_pixel, np.minimum(self.Line_width, self.Bandwidth))
-
-                self.factor_CU2el = self.effective_area * self.arcsec2str  * np.minimum(self.Slitwidth, self.Size_source)  * spectral_coverage * self.pixel_scale
-
-                sky_spectral_coverage = np.minimum(self.dispersion, self.Bandwidth)
-
-                self.factor_CU2el_sky = self.effective_area * self.arcsec2str  * self.Slitwidth * sky_spectral_coverage * self.pixel_scale
+                # working almost for dispersion! But actually we also need to have an optimal with pixel_scale!!!
+                # self.factor_CU2el = self.effective_area * self.arcsec2str  * np.minimum(self.Slitwidth, self.Size_source)  * np.minimum( self.dispersion, np.minimum(self.Line_width, self.Bandwidth)/2.35) * self.pixel_scale
+                # # il faut ici que je rajoute une line width
+                # # quand la ligne width devient importante 
+                # sky_spectral_coverage =  np.minimum( self.dispersion, np.minimum(self.Line_width, self.Bandwidth)/2.35)#np.minimum(self.dispersion, self.Bandwidth)
+                # self.factor_CU2el_sky = self.effective_area * self.arcsec2str  * self.Slitwidth * sky_spectral_coverage * self.pixel_scale
 
 
+                # working for dispersion but adding pixels_scale and slit_width!!!
+                source_spatial_arcsec = np.minimum(self.Slitwidth, self.Size_source)
+                source_spectral_angstrom = np.minimum(self.Line_width, self.Bandwidth)#/2.35
+                spatial_per_pix = source_spatial_arcsec / self.pixel_scale
+                spectral_per_pix = source_spectral_angstrom / self.dispersion
+                # Combine spatiale + spectrale en quadrature :
+                effective_pix_size = np.sqrt(spatial_per_pix**2 + spectral_per_pix**2)
+                # Puis :
+                self.factor_CU2el = self.effective_area * self.arcsec2str * source_spatial_arcsec * source_spectral_angstrom / effective_pix_size
+                sky_spatial_arcsec = self.Slitwidth
+                sky_spectral_angstrom =  self.Bandwidth  #/2.35            #np.minimum(self.Line_width, self.Bandwidth)
+                spatial_per_pix_sky = sky_spatial_arcsec / self.pixel_scale
+                spectral_per_pix_sky = sky_spectral_angstrom / self.dispersion
+                # Combine spatiale + spectrale en quadrature :
+                effective_pix_size_sky = np.sqrt(spatial_per_pix_sky**2 + spectral_per_pix_sky**2)
+                # Puis :
+                self.factor_CU2el_sky = self.effective_area * self.arcsec2str * sky_spatial_arcsec * sky_spectral_angstrom / effective_pix_size_sky
 
-                # TODO this one is totally wrong! when the slit width is infite at some point we get limited by the band width and increasing the dispersion does not increse the the sky exponentialle
-                # self.factor_CU2el = self.effective_area * self.arcsec2str *   np.minimum(self.Slitwidth,np.minimum(self.Size_source,self.PSF_RMS_det)) * self.dispersion *self.pixel_scale**2
+
         else: 
             # TODO for imager that already have some throughput, integrate over the throughput curve.
             self.factor_CU2el =   self.pixel_scale**2 * self.Throughput_FWHM 
@@ -594,16 +610,13 @@ class Observation:
         #TODO Here should be sure about the calculation. There is another way of taking the entire flux if it is a line 
         self.sky = self.Sky_CU*self.factor_CU2el_sky*self.exposure_time  # el/pix/frame
         self.Sky_noise = np.sqrt(self.sky * self.ENF) 
-        self.Signal_LU = convert_ergs2LU(self.Signal,self.wavelength, self.Redshift)
+        self.Signal_LU = convert_ergs2LU(self.Signal,self.wavelength)
         # if 1==0: # if line is totally resolved (for cosmic web for instance)
         #     self.Signal_el =  self.Signal_LU*self.factor_CU2el*self.exposure_time * self.flux_fraction_slit_applied  / self.spectral_resolution_pixel # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
         # else: # if line is unresolved for QSO for instance
         self.Signal_el =  self.Signal_LU * self.factor_CU2el * self.exposure_time * self.flux_fraction_slit_applied   # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
 
-#         print(Effective_area E2E_throughtput Detector_gradual_Noise Detector_noise Spectral_extent Spatial_extent Pixels_involved
-# Max_exposures Frames_number
-# ENF
-# Sky_CU Signal_CU Signal_e-_res_tot Sky_e-_source_tot Source_e-_source_tot)
+
 
 
 
@@ -656,7 +669,7 @@ class Observation:
         # self.signal_nsig_e_resol_nframe = 457*np.ones(self.len_xaxis)
         self.eresolnframe2lu = self.Signal_LU/self.Signal_resolution #TBV
         self.signal_nsig_LU = self.signal_nsig_e_resol_nframe * self.eresolnframe2lu #TBV
-        self.signal_nsig_ergs = convert_LU2ergs(self.signal_nsig_LU, self.wavelength, self.Redshift) 
+        self.signal_nsig_ergs = convert_LU2ergs(self.signal_nsig_LU, self.wavelength) 
         self.extended_source_5s = self.signal_nsig_ergs * (self.PSF_RMS_det*2.35)**2
 
         self.SB_lim_per_pix = self.signal_nsig_ergs
@@ -666,6 +679,20 @@ class Observation:
         #TODO change this ratio of 1.30e57
         self.point_source_5s = self.extended_source_5s * 1.30e57
         self.time2reach_n_sigma_SNR = self.acquisition_time *  np.square(n_sigma / self.SNR)
+
+
+        # print("Effective_area = ",np.unique(self.effective_area), "\n",
+        # "Pixels_involved = %i * %i x %i"%( np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)  ,   np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale,1)    ,    ( np.ceil(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2)*fwhm_sigma_ratio / self.Slitwidth)[self.i] if self.IFS else 1)), np.unique(self.pixels_total_source),"\n",
+        # "elem size pix = ", np.unique(self.elem_size),"\n",
+        # "Max_exposures = ",np.unique(self.N_images[self.i]), np.unique(self.N_images_true[self.i]),"\n",
+        # "Sky_CU = ",np.unique(self.Sky_CU),"\n",
+        # "Signal_CU = ",np.unique(self.Signal_LU),"\n",
+        # "Signal_e-_res_tot = ",np.unique(self.Signal_resolution[self.i]),"\n",
+        # # "Sky_e-_source_tot = ",,"\n",
+        # # "Source_e-_source_tot = ",,"\n",
+        # "SNR = ",np.unique(self.SNR[self.i]))
+
+
         # self.atm_trans=np.nan
         # self.final_sky=np.nan
         # self.Throughput_curve=np.nan
