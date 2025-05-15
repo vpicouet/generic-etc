@@ -518,16 +518,19 @@ class Observation:
         if self.SNR_res=="per pix":
           self.number_pixels_used = 1
         elif self.SNR_res=="per Res elem": # is that true ? when not IFS, the SNR won't get bigger than the slit , the rest will be cut
-            self.number_pixels_used = np.maximum(1,self.elem_size)
+            self.number_pixels_used = np.ceil(self.elem_size)
         elif self.SNR_res=="per Source":
-            self.number_pixels_used = np.maximum(1,self.pixels_total_source)
+            self.number_pixels_used = np.ceil(self.pixels_total_source)
 
         # print(self.IFS,self.elem_size,self.source_size, self.pixels_total_source)
         # print(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale, np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2),( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1),     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      , np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)  , (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1) , )
 
         red, blue, violet, yellow, green, pink, grey  = '#E24A33','#348ABD','#988ED5','#FBC15E','#8EBA42','#FFB5B8','#777777'
         self.colors= [red, violet, yellow  ,blue, green, pink, grey ]
-        self.ENF = 1 if (self.counting_mode | (self.EM_gain<10)) else 2 # Excess Noise Factor 
+
+
+        self.ENF = 1 if (self.counting_mode | ((self.EM_gain*np.ones(self.len_xaxis))[self.i]<2)) else 2 # Excess Noise Factor 
+
         self.CIC_noise = np.sqrt(self.CIC_charge * self.ENF) 
         self.Dark_current_f = self.Dark_current * self.exposure_time / 3600 # e/pix/frame
         self.Dark_current_noise =  np.sqrt(self.Dark_current_f * self.ENF)
@@ -1204,12 +1207,25 @@ class Observation:
         slit_profile = (a_ + b_) / np.ptp(a_ + b_)  # Shape: (100,)
         slit_profile = (slit_profile - np.nanmin(slit_profile) )/ np.nanmax(slit_profile - np.nanmin(slit_profile) )
 
-        if ("Spectra" in source) | ("Salvato" in source) | ("COSMOS" in source)| ("Blackbody" in source)| ("kpc spiral galaxy" in source)| ("Gaussian" in source)| ("cube" in source):
+        if ("baseline" in source.lower()) | ("Spectra" in source) | ("Salvato" in source) | ("COSMOS" in source)| ("Blackbody" in source)| ("kpc spiral galaxy" in source)| ("Gaussian" in source)| ("cube" in source):
             # TODO should I replace PSF_x by PSF_x**2+Rx**2???? Issue with the normilization maybe... Need to compare to Bruno's code
             spatial_profile = Gaussian1D.evaluate(np.arange(size[1]),  1,  size[1]/2, PSF_x)
             if self.spectro:
                 if ("baseline" in source.lower()) | (("UVSpectra=" in source) & (self.wavelength>300)): 
-                    spectra = flux* Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2, PSF_λ)/ Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2, self.PSF_lambda_pix**2/(PSF_λ**2 + self.PSF_lambda_pix**2)).sum()
+                    if ("CIV" in source)| ("CIII" in source)| ("OVI" in source)| ("Lyα" in source):
+                        w_nm = (float(re.search(r'\d+', source).group())/10 ) *(1+self.Redshift)
+                    else:
+                        w_nm=self.wavelength
+    
+                    
+                    spectra = flux* Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2 + (w_nm-self.wavelength)*10/self.dispersion, PSF_λ)#
+                    # print(w_nm,self.wavelength,self.dispersion, size[0]/2 + (w_nm-self.wavelength)*10*self.dispersion,np.min(spectra),np.max(spectra))
+                    if spectra.sum()>0:
+                        spectra /= spectra.sum()
+                    # print(spectra)
+                    # else:
+                    #     spectra = np.ones(size[0])
+                    # / Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2 + (w_nm-self.wavelength)*10*self.dispersion, self.PSF_lambda_pix**2/(PSF_λ**2 + self.PSF_lambda_pix**2)).sum()
                     spectra *= atm_qe_normalized_shape   
                     source_im =  np.outer(spectra,spatial_profile*slit_profile ).T /Gaussian1D.evaluate(np.arange(size[1]),  1,  50, Rx**2/(PSF_x**2+Rx**2)).sum()
                 elif "blackbody" in source.lower():
