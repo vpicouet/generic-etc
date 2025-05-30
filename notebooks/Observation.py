@@ -1218,10 +1218,10 @@ class Observation:
                         w_nm=self.wavelength
     
                     
-                    spectra = flux* Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2 + (w_nm-self.wavelength)*10/self.dispersion, PSF_λ)#
+                    spectra =  flux *Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2 + (w_nm-self.wavelength)*10/self.dispersion, PSF_λ)   / Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2, self.PSF_lambda_pix**2/(PSF_λ**2 + self.PSF_lambda_pix**2)).sum()
                     # print(w_nm,self.wavelength,self.dispersion, size[0]/2 + (w_nm-self.wavelength)*10*self.dispersion,np.min(spectra),np.max(spectra))
-                    if spectra.sum()>0:
-                        spectra /= spectra.sum()
+                    # if spectra.sum()>0:
+                    #     spectra *= flux/spectra.sum()
                     # print(spectra)
                     # else:
                     #     spectra = np.ones(size[0])
