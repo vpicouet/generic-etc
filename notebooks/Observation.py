@@ -50,7 +50,7 @@ def download(url, file=""):
     try:
         response = requests.get(url, stream=True)
     except requests.exceptions.RequestException as e:
-        verboseprint(e)
+        print(e)
         return False
     else:
         total_size_in_bytes = int(response.headers.get("content-length", 0))
@@ -70,7 +70,7 @@ def download(url, file=""):
         # plt.close('all')
         # plt.close(progress_bar.fig)
         if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
-            verboseprint("ERROR, something went wrong")
+            print("ERROR, something went wrong")
             return False
         else:
             return True
@@ -1101,7 +1101,7 @@ class Observation:
             if self.smearing == 0:
                 a = Table.read("fraction_flux.csv")
                 threshold = 5.5
-                fraction_signal = np.interp(self.EM_gain/self.RN,a["G/RN"],a["fractionflux"])
+                fraction_signal = interp(self.EM_gain/self.RN,a["G/RN"],a["fractionflux"])
             # fraction_rn = f(flux=0.1,EM_gain=self.EM_gain, RN=self.RN)
             # fraction_signal = f2(flux=0.1,EM_gain=self.EM_gain, RN=self.RN)
             # snr_ratio = f3(flux=0.1,EM_gain=self.EM_gain, RN=self.RN)
@@ -1667,13 +1667,13 @@ def fitswrite(fitsimage, filename, verbose=True, header=None):
         fitsimage.writeto(filename, overwrite=True)
     if hasattr(fitsimage, "header"):
         if "NAXIS3" in fitsimage.header:
-            # verboseprint("2D array: Removing NAXIS3 from header...")
+            # print("2D array: Removing NAXIS3 from header...")
             fitsimage.header.remove("NAXIS3")
         if "SKEW" in fitsimage.header:
             fitsimage.header.remove("SKEW")
     elif hasattr(fitsimage[0], "header"):
         if "NAXIS3" in fitsimage[0].header:
-            # verboseprint("2D array: Removing NAXIS3 from header...")
+            # print("2D array: Removing NAXIS3 from header...")
             fitsimage[0].header.remove("NAXIS3")
         if "SKEW" in fitsimage[0].header:
             fitsimage[0].header.remove("SKEW")
@@ -1681,20 +1681,20 @@ def fitswrite(fitsimage, filename, verbose=True, header=None):
     elif not os.path.exists(os.path.dirname(filename)):
         os.makedirs(os.path.dirname(filename))
     if not os.path.exists(os.path.dirname(filename)):
-        # verboseprint("%s not existing: creating folde..." % (os.path.dirname(filename)))
+        # print("%s not existing: creating folde..." % (os.path.dirname(filename)))
         os.makedirs(os.path.dirname(filename))
     try:
         fitsimage.writeto(filename, overwrite=True)
     except IOError:
-        # verboseprint("Can not write in this repository : " + filename)
+        # print("Can not write in this repository : " + filename)
         filename = "%s/%s" % (
             os.path.dirname(os.path.dirname(filename)),
             os.path.basename(filename),
         )
         # filename = "/tmp/" + os.path.basename(filename)
-        # verboseprint("Instead writing new file in : " + filename) 
+        # print("Instead writing new file in : " + filename) 
         fitsimage.writeto(filename, overwrite=True)
-    # verboseprint("Image saved: %s" % (filename))
+    # print("Image saved: %s" % (filename))
     return filename
 ##%%
 
@@ -1731,6 +1731,134 @@ if __name__ == "__main__":
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # Ajuste le layout
         plt.show()
 
+
+def estimate_background(data, center, radius=30, n=1.8):
+    """Function that estimate the Background behing a source given an inner
+    radius and a factor n to the outter radius such as the background is
+    computed on the area which is on C2(n*radius)/C1(radius)
+    """
+    import numpy as np
+
+    y, x = np.indices((data.shape))
+    r = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
+    r = r.astype(int)
+    mask = (r >= radius) & (r <= n * radius)
+    fond = np.nanmean(data[mask])
+    return fond
+
+
+def radial_profile_normalized(
+    data,
+    center,
+    anisotrope=False,
+    angle=30,
+    radius=40,
+    n=1.5,
+    center_type="barycentre",
+    radius_bg=70,
+    n1=20,
+    size=70,
+):
+    """Function that returns the radial profile of a spot
+    given an input image + center.
+    """
+    from scipy import ndimage
+    import numpy as np
+
+    y, x = np.indices((data.shape))
+    # print("center_type = %s" % (center_type))
+    n1 = np.nanmin([n1, int(center[1]), int(center[0])])
+    image = data[
+        int(center[1]) - n1 : int(center[1]) + n1,
+        int(center[0]) - n1 : int(center[0]) + n1,
+    ]
+    if center_type.lower() == "maximum":
+        barycentre = np.array(
+            [
+                np.where(image == image.max())[0][0],
+                np.where(image == image.max())[1][0],
+            ]
+        )
+    if center_type.lower() == "barycentre":
+        background = estimate_background(data, center, radius, 1.8)
+        new_image = image - background
+        index = new_image > 0.5 * np.nanmax(new_image)
+        new_image[~index] = 0
+        barycentre = ndimage.measurements.center_of_mass(new_image)
+    if center_type.lower() == "user":
+        barycentre = [n1, n1]
+    else:
+        # print("Center type not understood, taking barycenter one")
+        background = estimate_background(data, center, radius, 1.8)
+        new_image = image - background
+        index = new_image > 0.5 * np.nanmax(new_image)  # .max()
+        new_image[~index] = 0
+        barycentre = ndimage.measurements.center_of_mass(
+            new_image
+        )  # background#np.nanmin(image)
+    new_center = np.array(center) + barycentre[::-1] - n1
+    # print(
+    #     "new_center = {}, defined with center type: {}".format(new_center, center_type)
+    # )
+    if radius_bg:
+        fond = estimate_background(data, new_center, radius, n)
+    else:
+        fond = 0
+    image = data - fond  # (data - fond).astype(int)
+
+    r = np.sqrt((x - new_center[0]) ** 2 + (y - new_center[1]) ** 2)
+    #    r = np.around(r)-1
+    rint = r.astype(int)
+
+    image_normalized = image
+    # / np.nansum(image[r<radius])
+    if anisotrope == True:
+        theta = abs(180 * np.arctan((y - new_center[1]) / (x - new_center[0])) / np.pi)
+        tbin_spectral = np.bincount(
+            r[theta < angle].ravel(), image_normalized[theta < angle].ravel()
+        )
+        tbin_spatial = np.bincount(
+            r[theta > 90 - angle].ravel(), image_normalized[theta > 90 - angle].ravel(),
+        )
+        nr_spectral = np.bincount(r[theta < angle].ravel())
+        nr_spatial = np.bincount(r[theta > 90 - angle].ravel())
+        EE_spatial = (
+            100
+            * np.nancumsum(tbin_spatial)
+            / np.nanmax(np.nancumsum(tbin_spatial)[:100] + 1e-5)
+        )
+        EE_spectral = (
+            100
+            * np.nancumsum(tbin_spectral)
+            / np.nanmax(np.nancumsum(tbin_spectral)[:100] + 1e-5)
+        )
+        return (
+            tbin_spectral / nr_spectral,
+            tbin_spatial / nr_spatial,
+            EE_spectral,
+            EE_spatial,
+        )
+    else:
+        tbin = np.bincount(rint.ravel(), image_normalized.ravel())
+        nr = np.bincount(rint.ravel())
+        rsurf = np.sqrt(np.nancumsum(nr) / np.pi)
+        rmean = np.bincount(rint.ravel(), r.ravel()) / nr
+        dist = np.array(rint[rint < radius].ravel(), dtype=int)
+        data = image[rint < radius].ravel()
+        stdd = [
+            np.nanstd(data[dist == distance]) / np.sqrt(len(data[dist == distance]))
+            for distance in np.arange(size)
+        ]
+        radialprofile = tbin / nr
+        EE = np.nancumsum(tbin) * 100 / np.nanmax(np.nancumsum(tbin)[:radius] + 1e-5)
+        return (
+            rsurf[:size],
+            rmean[:size],
+            radialprofile[:size],
+            EE[:size],
+            new_center[:size],
+            stdd[:size],
+        )
 
 # %load_ext line_profiler
 # %lprun -f Observation  Observation()#.SimulateFIREBallemCCDImage(Bias="Auto",  p_sCIC=0,  SmearExpDecrement=50000,  source="Slit", size=[100, 100], OSregions=[0, 100], name="Auto", spectra="-", cube="-", n_registers=604, save=False, field="targets_F2.csv",QElambda=True,atmlambda=True,fraction_lya=0.05)
