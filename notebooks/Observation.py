@@ -132,36 +132,66 @@ def convert_ergs2LU(flux_ergs,wave_nm):
     # LU = flux_ergs / (Energy * solid_angle)  # Convert ergs to LU
 
 
-def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape, phys=False):
+# def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape, phys=False):
+#     """
+#     Resample un datacube avec interpolation/extrapolation selon longueur d'onde et spatial.
+#     """
+#     header = input_cube.header
+#     input_cube=input_cube.data
+#     wave_start_out, wave_end_out = wave_range_nm
+#     input_nz, input_nx, input_ny = input_cube.data.shape
+#     # print(input_cube.data.shape)
+#     cunit3 = header.get('CUNIT3', 'nm').strip().lower()
+#     # Définition du facteur de conversion
+#     unit_conversion = {
+#         'm': 1e9,       # mètres → nanomètres
+#         'cm': 1e7,      # centimètres → nanomètres
+#         'mm': 1e6,      # millimètres → nanomètres
+#         'um': 1e3,      # micromètres → nanomètres
+#         'nm': 1,        # nanomètres (aucun changement)
+#         'angstrom': 0.1 # Ångströms → nanomètres
+#     }
+#     factor = unit_conversion.get(cunit3, 1)  # Valeur par défaut = 1 (nm)
+#     # Calcul correct des longueurs d'onde en tenant compte de l'unité
+#     wave_start_in = (header['CRVAL3'] + (1 - header['CRPIX3']) * header['CDELT3']) * factor
+#     wave_end_in = (header['CRVAL3'] + (input_nz - header['CRPIX3']) * header['CDELT3']) * factor
+
+#     print(wave_start_in,wave_end_in)
+
+def resample_cube(input_hdu, wave_range_nm, spatial_extent_arcsec, output_shape, phys=False):
     """
-    Resample un datacube avec interpolation/extrapolation selon longueur d'onde et spatial.
+    Resample a datacube with interpolation/extrapolation in wavelength and spatial directions.
     """
-    header = input_cube.header
-    input_cube=input_cube.data
+    header = input_hdu.header
+    input_cube=input_hdu.data
     wave_start_out, wave_end_out = wave_range_nm
-    input_nz, input_nx, input_ny = input_cube.data.shape
-    # print(input_cube.data.shape)
-    cunit3 = header.get('CUNIT3', 'nm').strip().lower()
-    # Définition du facteur de conversion
-    unit_conversion = {
-        'm': 1e9,       # mètres → nanomètres
-        'cm': 1e7,      # centimètres → nanomètres
-        'mm': 1e6,      # millimètres → nanomètres
-        'um': 1e3,      # micromètres → nanomètres
-        'nm': 1,        # nanomètres (aucun changement)
-        'angstrom': 0.1 # Ångströms → nanomètres
-    }
-    factor = unit_conversion.get(cunit3, 1)  # Valeur par défaut = 1 (nm)
-    # Calcul correct des longueurs d'onde en tenant compte de l'unité
-    wave_start_in = (header['CRVAL3'] + (1 - header['CRPIX3']) * header['CDELT3']) * factor
-    wave_end_in = (header['CRVAL3'] + (input_nz - header['CRPIX3']) * header['CDELT3']) * factor
+    input_nz, input_nx, input_ny = input_cube.shape
+
+    # Get wavelength axis information from header
+    crval = header['CRVAL3']
+    cdelt = header['CDELT3']
+    crpix = header['CRPIX3']
+    cunit = header.get('CUNIT3', 'm')  # Default to nm if missing
+
+    try:
+        unit = u.Unit(cunit)
+    except ValueError:
+        raise ValueError(f"Unknown unit in CUNIT3: {cunit}")
+
+    pix = np.arange(input_nz)
+    wave_axis = (crval + (pix + 1 - crpix) * cdelt) * unit
+    # print(wave_axis)
+    wave_axis_nm = wave_axis.to(u.nm).value
+
+    wave_start_in = wave_axis_nm[0]
+    wave_end_in = wave_axis_nm[-1]
+    # print(wave_start_in,wave_end_in)
     spatial_radius_in_x = header['CDELT1'] * (input_nx - 1) / 2.0 * 3600  # Convert from degrees to arcseconds
     spatial_radius_in_y = header['CDELT2'] * (input_ny - 1) / 2.0 * 3600  # Convert from degrees to arcseconds
     spatial_radius_out = spatial_extent_arcsec / 2.0
 
-
     if phys==False:
-        # print("phys",phys,False)
+        # in this case I just keep the exact same cube and act as if it was exactly the size of the FOV
         input_nx, input_ny, input_nz = input_cube.shape
         x_out = np.linspace(0, input_nx - 1, output_shape[0])
         y_out = np.linspace(0, input_ny - 1, output_shape[1])
@@ -171,6 +201,7 @@ def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape
         resampled_cube = map_coordinates(input_cube, [x_grid, y_grid, z_grid], order=1, mode='nearest')
         return resampled_cube
     else:
+        # in this case I just keep the exact same cube and act as if it was exactly the size of the FOV
         # print("phys",phys,True)
         # if we are out of limit, we change the reshift of the cube to end in the limit:
         # wave_start_in, wave_end_in = 203,205
@@ -1245,6 +1276,7 @@ class Observation:
                         phys = True if source.split("-")[1]=="resampled_phys" else False
                         # if source.split("-")[0] == "lya_cube_merged_with_artificial_source_CU_1pc":
                         name_ = "_resampled_phys.fits" if phys else "_resampled.fits"
+                        # print("../data/Emission_cube/"+ source.split("-")[0] + ".fits")
                         new_cube = convert_fits_cube("../data/Emission_cube/"+ source.split("-")[0] + ".fits","../data/Emission_cube/"+ source.split("-")[0] + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,phys=phys)                         
                         cube_detector =  fits.open(new_cube)[0].data
                         # print(1, np.max(cube_detector), np.min(cube_detector))
