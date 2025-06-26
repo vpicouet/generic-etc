@@ -843,7 +843,7 @@ class Observation:
         fwhm_sigma_ratio =2.35#1.0 # 2.355
         # compute the size of the source/res elem in pixels
         if self.spectro:
-            source_spatial_pixels = np.maximum(1,np.minimum(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.pixel_scale, self.Slitlength / self.pixel_scale))
+            source_spatial_pixels = np.maximum(1,np.minimum(np.sqrt(self.Size_source**2+self.PSF_RMS_det**2) * fwhm_sigma_ratio / self.pixel_scale, self.Slitlength / self.pixel_scale))
             if self.Slitwidth>>self.PSF_RMS_mask:
                 source_spectral_pixels = np.maximum(1, np.sqrt((self.Slitwidth/self.pixel_scale/4)**2 +self.PSF_lambda_pix**2 + (np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)**2))
             else:
