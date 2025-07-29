@@ -4,7 +4,7 @@ import warnings
 warnings.filterwarnings("ignore")
 from ipywidgets import Button, Layout, jslink, IntText, IntSlider, interactive, interact, HBox, Layout, VBox
 from astropy.modeling.functional_models import Gaussian2D, Gaussian1D
-import os
+import os, glob
 from IPython.display import display, clear_output
 import ipywidgets as widgets
 import matplotlib.pyplot as plt
@@ -31,6 +31,11 @@ from scipy.interpolate import RegularGridInterpolator
 from astropy.wcs import WCS
 import numpy as np
 from astropy.cosmology import Planck18 as cosmo
+import cmocean
+from scipy.stats import norm
+from matplotlib.offsetbox import AnchoredText
+from scipy.optimize import curve_fit
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 np.seterr(invalid='ignore')
  
@@ -38,7 +43,8 @@ np.seterr(invalid='ignore')
 from scipy.ndimage import map_coordinates
 
 
-
+gaus = lambda x, a, xo, sigma, offset: a ** 2  * np.exp(-(x - xo)**2 / (2 * sigma**2)) + offset
+n2,n1=100,500
 
 
 def download(url, file=""):
@@ -464,6 +470,1738 @@ def variable_smearing_kernels(image, smearing=1.5, SmearExpDecrement=50000):
 
 
 
+def load_instruments(sheet_id= "1Ox0uxEm2TfgzYA6ivkTpU4xrmN5vO5kmnUPdCSt73uU", sheet_name= "instruments.csv", database="Online DB"):
+    """
+    Load instruments data from a Google Sheet or local database.
+
+    Parameters:
+    - sheet_id (str): The Google Sheet ID.
+    - sheet_name (str): The name of the sheet to load.
+    - database (str): Either "Online DB" or "Local DB".
+
+    Returns:
+    - instruments (Table): The loaded instruments data.
+    - database (str): The database source used.
+    """
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+    if database == "Online DB":
+        try:
+            instruments =   Table.from_pandas(pd.read_csv(url)).filled(np.nan)
+            database = "Online DB"
+        except Exception as e:
+            print(e)
+            instruments = Table.from_pandas(pd.read_excel("../instruments.xlsx"))
+            instruments = instruments[instruments.colnames]
+            for col_name in instruments.colnames[3:]:
+                instruments[col_name] = to_float_or_nan(instruments[col_name])
+            database = "Local DB"
+    else:
+        instruments = Table.from_pandas(pd.read_excel("../instruments.xlsx"))
+        instruments = instruments[instruments.colnames]
+        for col_name in instruments.colnames[3:]:
+            instruments[col_name] = to_float_or_nan(instruments[col_name])
+        database = "Local DB"
+    return instruments, database
+
+# instruments, database = load_instruments(sheet_id= "1Ox0uxEm2TfgzYA6ivkTpU4xrmN5vO5kmnUPdCSt73uU", sheet_name= "instruments.csv")
+# instruments_SNR, database_SNR = load_instruments(sheet_name="SNR")
+
+
+def dark_plateau(T=-80,a=0.23362821,plateau=0.44384484):
+    T = T+273.15
+    E = 1.1557 - (7.021*1e-4*T**2)/(1108+T)
+    k = 8.62e-5
+    return 2.55*1e15*a*3600*0.0013**2*T**(3/2)*np.exp(-E/(2*k*T))+plateau
+
+
+
+def mostFrequent(arr):
+    n=len(arr)
+    # Insert all elements in Hash.
+    Hash = dict()
+    for i in range(n):
+        if arr[i] in Hash.keys():
+            Hash[arr[i]] += 1
+        else:
+            Hash[arr[i]] = 1
+    # find the max frequency
+    max_count = 0
+    res = -1
+    for i in Hash:
+        if (max_count < Hash[i]):
+            res = i
+            max_count = Hash[i]
+         
+    return res
+
+
+
+
+
+class ExposureTimeCalulator(widgets.HBox):
+    @initializer
+    def __init__(self, instruments=None,database=None, instrument="FIREBall-2 2025",x_axis='exposure_time', time_max = 2005,SNR_res="per Res elem" ,spectrograph=True, **kwargs):#, Atmosphere=0.5, Throughput=0.13*0.9, follow_temp=False, acquisition_time=1, Sky=4, Signal=24, EM_gain=1400,RN=109,CIC_charge=0.005, Dark_current=0.08,readout_time=1.5,counting_mode=False,smearing=0.7,extra_background=0,temperature=-100,PSF_RMS_mask=2.5,PSF_RMS_det = 3.5,QE=0.45,cosmic_ray_loss_per_sec=0.005,
+        """
+        Generate an ETC app containing multiple widghet that allow to change the ETC parameters
+        as well as plotting the result (e- and noise budget, limiting flux, SNR) in terms of the different parameters.
+        """
+        super().__init__()
+        self.instruments=instruments
+        args, _, _, locals_ = inspect.getargvalues(inspect.currentframe())
+        self.Redshift=0
+        for i in range(len(instruments)):
+            setattr(self, instruments["Charact."][i], instruments[instrument][i] ) if  isinstance(type(instruments[instrument][i]), (int, float, complex,np.float64))  else setattr(self, instruments["Charact."][i], float(instruments[instrument][i]) )#.replace("%","")
+        exposure_time=np.logspace(0,np.log10(time_max))
+        self.instruments_dict = {name: {key: val for key, val in zip(instruments["Charact."][:], instruments[name][:]) if not isinstance(key, np.ma.core.MaskedConstant) and not isinstance(val, np.ma.core.MaskedConstant)} for name in instruments.colnames[3:]}
+
+        self.output = widgets.Output()
+        time=exposure_time
+        self.time =  float(instruments[instrument][instruments["Charact."]=="exposure_time"][0])
+        i = np.argmin(abs(self.time - exposure_time))
+        self.arg=i
+        # print(self.arg,i,time[i],time[i],self.time)
+        IFS = False if self.dimensions==2 else True
+
+        self.new = Observation(instruments=instruments, instrument=instrument,Redshift=self.Redshift,Throughput_FWHM=self.Throughput_FWHM, smearing=self.smearing,counting_mode=False,exposure_time=exposure_time,Sky=self.Sky,acquisition_time=self.acquisition_time,Signal=self.Signal,EM_gain=self.EM_gain,RN=self.RN, CIC_charge=self.CIC_charge, Dark_current=self.Dark_current,PSF_RMS_mask=self.PSF_RMS_mask,PSF_RMS_det=self.PSF_RMS_det,QE=self.QE, extra_background=self.extra_background,
+            Collecting_area=self.Collecting_area, pixel_scale=self.pixel_scale, Throughput=self.Throughput, Spectral_resolution=self.Spectral_resolution, Slitwidth=self.Slitwidth, dispersion=self.dispersion,
+            Size_source=self.Size_source,Line_width=self.Line_width,wavelength=self.wavelength, Atmosphere=self.Atmosphere, pixel_size=self.pixel_size,cosmic_ray_loss_per_sec=self.cosmic_ray_loss_per_sec,readout_time=self.readout_time, Slitlength=self.Slitlength,i=self.arg,Δλ=0,Δx=0,IFS=IFS,SNR_res=SNR_res,spectrograph=spectrograph)
+
+
+        self.x = exposure_time
+        
+        
+        style={}
+        width = '400px'
+        width = '500px'
+        small = '247px'
+        small = '230px'
+        psmall = '186px'
+        vsmall = '147px'
+        c_update=False
+        # ALL THE DIFFERENT VARIATION WITH TEMPERATURE
+        self.smearing_poly = np.poly1d([-0.0306087, -2.2226087])#np.poly1d([-0.0453913, -3.5573913])
+        # self.dark_poly = np.poly1d([2.13640462e-05, 7.83596239e-03, 9.57682651e-01, 3.86154296e+01])#with plateau
+        # self.dark_poly = np.poly1d([0.07127906, 6.83562573]) #without plateau# does to low because only calibrated down to -100 but then it kinda saturated. maybe because of CIC?
+        self.dark_poly = dark_plateau
+        # self.CIC_poly = np.poly1d([1.57925408e-05, 2.80396270e-03, 1.34276224e-01]) #without plateau# does to low because only calibrated down to -100 but then it kinda saturated. maybe because of CIC?
+
+
+        # self.other_options =  ['exposure_time','acquisition_time',"Signal","RN","Dark_current" ,'Sky',"readout_time","PSF_RMS_det","QE","cosmic_ray_loss_per_sec","Throughput","Atmosphere","lambda_stack","Size_source",'Collecting_area',"Δx","Δλ"]#[:-3]
+        self.other_options =  [
+                               "------DECTECTOR PERFORMANCE","QE","RN","Dark_current" ,"cosmic_ray_loss_per_sec","EM_gain","extra_background","CIC_charge", #,"pixel_size"
+                               "-------------OBSERVED SOURCE","Signal",'Sky',"Size_source","Line_width", #,"Redshift"
+                               "--------OBSERVATION STRATEGY", "Atmosphere",'exposure_time','acquisition_time',"readout_time","lambda_stack",  "wavelength", #,"Δx","Δλ"
+                               "-----------INSTRUMENT DESIGN",'Collecting_area',"pixel_scale","Throughput","PSF_RMS_mask","PSF_RMS_det",
+                               "---------SPECTROGRAPH DESIGN","Spectral_resolution","Slitwidth","Slitlength","dispersion"] #,"Bandwidth"
+        self.other_options_imager =  [
+                               "------DECTECTOR PERFORMANCE","QE","RN","Dark_current" ,"cosmic_ray_loss_per_sec", #,"pixel_size"
+                               "-------------OBSERVED SOURCE","Signal",'Sky',"Size_source",#,"Redshift"
+                               "--------OBSERVATION STRATEGY", "Atmosphere",'exposure_time','acquisition_time',"readout_time",
+                               "-----------INSTRUMENT DESIGN",'Collecting_area',"pixel_scale","Throughput","PSF_RMS_det"]
+        self.fb_options_no_temp = self.other_options #+ ["----------AMPLIFIED DECTECTOR","smearing"]
+        self.fb_options = self.fb_options_no_temp + ["temperature"]
+
+        self.instrument = widgets.Dropdown(options=instruments.colnames[3:],value=instrument,description="Instrument", layout=Layout(width=small),description_tooltip="Instrument characteristics",continuous_update=c_update)
+        # print(self.instruments_dict[self.instrument.value]["dispersion"],type(self.instruments_dict[self.instrument.value]["dispersion"]))
+        self.spectro = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
+
+        self.ylog = widgets.Checkbox(value=False,description='ylog',disabled=False,style =dict(description_width='initial'), layout=Layout(width='147px'),description_tooltip="Use this check box to use a log scale for the y axis",continuous_update=c_update)
+        self.yscale="linear"
+        self.xlog = widgets.Checkbox(value=True,description='xlog',disabled=False,style =dict(description_width='initial'), layout=Layout(width='147px'),description_tooltip="Use this check box to use a log scale for the x axis",continuous_update=c_update)
+        # self.SNR_res = widgets.Checkbox(value=SNR_res,description='SNR(Res)',disabled=False, style =dict(description_width='initial'),layout=Layout(width='147px'),description_tooltip="Use this check box to plot the SNR per pixel or per element resolution",continuous_update=c_update)
+        
+        self.SNR_res = widgets.Dropdown(value=SNR_res,description='SNR',options=["per pix","per Res elem","per Source"],disabled=False, style =dict(description_width='initial'),layout=Layout(width='147px'),description_tooltip="Use this check box to plot the SNR per pixel or per element resolution",continuous_update=c_update)
+        #,"λPix/xRes","xPix/λRes"
+        
+        self.IFS = widgets.Checkbox(value=IFS,description='IFS',disabled=False, layout=Layout(width='147px'),description_tooltip="Check this box if the instrument is an integral field spectrograph (not just a single slit of fiber)",continuous_update=c_update)
+        # self.source_im = widgets.Checkbox(value=False,description='Source',disabled=False, layout=Layout(width='179px'),description_tooltip="Check this box to image the source",continuous_update=c_update)
+        self.source_im = widgets.Dropdown(options=["Sim image","Source","Convolved source","SNR"],value="Sim image",description='Type',disabled=False, layout=Layout(width='179px'),description_tooltip="Type of the images. Either the source, the simulated images or the SNR",continuous_update=c_update)
+        #,"SNR"
+        self.spectrograph = widgets.Checkbox(value=self.spectro,description='Spectro',disabled=False, visible=False,layout=Layout(width='167px'),description_tooltip="Check this box if the instrument is not just an imager (= has a dispersive element)",continuous_update=c_update)
+        # self.IFS_value = ("IFS" if IFS else "Spectro") is self.spectro else "Imager"
+        # self.IFS_value = "IFS" if IFS else ("Spectro" if self.spectro else "Imager")
+        # self.IFS = widgets.Dropdown(value="Spectro",options=["Imager","Spectro","IFS"],description='Type',disabled=False, layout=Layout(width='147px'),description_tooltip="IFS is instrument is an integral field spectrograph (not just a single slit of fiber)",continuous_update=True)
+       
+        self.Signal = widgets.FloatLogSlider(min=-21, max=-9 ,value=self.Signal,description='Source brightness', style =dict(description_width='initial'), layout=Layout(width=width),description_tooltip="Flux of the diffuse source in ergs/cm2/s/arcsec2/Å.",continuous_update=c_update)
+        self.Sky = widgets.FloatLogSlider( min=-23, max=-15,value=self.Sky,base=10, style =dict(description_width='initial'), layout=Layout(width=width),description='Sky    brightness',description_tooltip="Level of sky background illumination (zodiacal and galactic) in ergs/cm2/s/arcsec2/Å ",continuous_update=c_update)
+        self.acquisition_time = widgets.FloatLogSlider( min=-1, max=3,value=self.acquisition_time,style =style ,base=10,layout=Layout(width=width),description='Taq (h)',description_tooltip="Total acquisition time [hours]",continuous_update=c_update)
+        self.exposure = widgets.FloatRangeSlider( min=0, max=time_max,value=(self.readout_time,self.time),style = style, layout=Layout(width=width),description='Rd/Exp time',step=0.1,readout_format='.0f',description_tooltip="Readout time and exposure time [seconds]",continuous_update=c_update)
+
+        self.fwhm = widgets.FloatRangeSlider( min=0.01, max=6,value=(self.PSF_RMS_mask,self.PSF_RMS_det),style = style, layout=Layout(width=width),description='Mask/det σ',step=0.01,readout_format='.2f',description_tooltip="Spatial resolution in arcseconds respectively at the mask and detector level. To be multiplied by 2.35 to have the FWHM.",continuous_update=c_update)
+        self.RN = widgets.FloatSlider( min=0.01, max=120,value=self.RN, style = style, step=0.1, layout=Layout(width=width),description='Read noise',description_tooltip="Detector readout noise in electrons/pixel",continuous_update=c_update)
+        self.QE = widgets.FloatSlider( min=0.01, max=1,value=self.QE,style = style, layout=Layout(width=width),description='QE',step=0.01,readout_format='.2f',description_tooltip="Detector quantum efficiency",continuous_update=c_update)
+        self.Dark_current = widgets.FloatSlider( min=0, max=50,value=self.Dark_current, style = style, layout=Layout(width=width),description='Dark current',step=0.0011,readout_format='.2f',description_tooltip="Detector dark current [e-/pix/hour]",continuous_update=c_update)
+
+        self.extra_background = widgets.FloatSlider( min=0, max=200,value=self.extra_background,style = style, layout=Layout(width=width),description='Extra bckgnd',step=0.2,readout_format='.1f',description_tooltip="Additional background on the detector [e-/pix/hour]",continuous_update=c_update)
+        self.EM_gain = widgets.IntSlider( min=1, max=3500,value=self.EM_gain, style = style, layout=Layout(width=width),description='EM gain',description_tooltip="EMCCD amplification gain in e-/e-",continuous_update=c_update)
+        self.CIC_charge = widgets.FloatSlider( min=0, max=0.07,value=self.CIC_charge,style = style, layout=Layout(width=width),description='CIC charge',step=0.001,readout_format='.3f',description_tooltip="EMCCD spurious charges due to amplification in electrons [e-/pix]",continuous_update=c_update)
+        self.follow_temp = widgets.Checkbox(value=False,description='Temp',disabled=False, layout=Layout(width=vsmall),description_tooltip="Check this box to force charge transfer efficiency and dark current levels to be fixed by the temperature widget. Interesting feature to optimize EMCCD temperature.",continuous_update=c_update)
+        self.counting_mode = widgets.Checkbox(value=False,description='γ-Threshold',disabled=False, layout=Layout(width=psmall),description_tooltip="Check this box to apply thresholding photon counting processing. The efficiency of this process is determined by the gain, read noise, smearing, flux.",continuous_update=c_update)
+        self.temperature = widgets.FloatSlider( min=-120, max=-85,value=-115, style = style,description=r'Temp (C)',step=0.1, layout=Layout(width=width),description_tooltip="EMCCD's Temperature in Celcius degrees: determines its charge transfer efficiency and dark current rate.",continuous_update=c_update)
+        self.smearing = widgets.FloatSlider( min=0, max=self.smearing_poly(-120),value=self.smearing, layout=Layout(width=width),description='Smearing',step=0.01,description_tooltip="Smearing length of the EMCCD (exponential length in pixels). This length, representing the charge transfer efficiency is fixed by the temperature when the Temp checkbox is checked.",continuous_update=c_update)
+       
+        self.Collecting_area = widgets.FloatLogSlider( min=-2, max=3,value=self.Collecting_area, style =style,base=10, layout=Layout(width=width),description='Area',description_tooltip="Collecting area of the instrument in square meter",continuous_update=c_update)
+        self.pixel_scale = widgets.FloatSlider( min=0.01, max=5,value=self.pixel_scale,base=10, style =style, layout=Layout(width=width),description='Pixel scale',description_tooltip="Pixel plate scale in  ''/pix",continuous_update=c_update)
+        self.Throughput = widgets.FloatSlider( min=0.01, max=1,value=self.Throughput,base=10, style =style, layout=Layout(width=width),description='Throughput',description_tooltip="Instrument throughput at effective wavelength (not accounting for detector quantum efficiency and atmospheric transmission)",continuous_update=c_update)
+
+        self.database = widgets.Dropdown(options=["Online DB","Local DB"],value=database,description="", layout=Layout(width='90px'),description_tooltip="Instrument characteristics",continuous_update=c_update, style =dict(description_width='initial'))
+        self.interpolation = widgets.Dropdown(options=["None", 'gaussian', 'none', 'nearest', 'bilinear', 'bicubic', 'spline16','spline36', 'hanning', 'hamming', 'hermite', 'kaiser', 'quadric','catrom', 'bessel', 'mitchell', 'sinc', 'lanczos'],value="None",description="Interpolation", layout=Layout(width='350px'),description_tooltip="Interpolation method in the the imshow method",continuous_update=c_update, style =dict(description_width='initial'))
+
+
+        self.dependencies = widgets.SelectMultiple(options=['dispersion=10*wavelength/Spectral_resolution/2','pixel_scale=2.35*PSF_RMS_det/2', 'CIC_charge=EM_gain/2'],value=[],rows=2,description='Dep.',disabled=False)
+
+        
+        self.Atmosphere = widgets.FloatSlider( min=0.1, max=1,value=self.Atmosphere,base=10, style =style, layout=Layout(width=width),description='Atmosphere',description_tooltip="Atmospheric transmission",continuous_update=c_update)
+        self.pixel_size = widgets.FloatSlider( min=2, max=40,value=self.pixel_size,base=10, style =style, layout=Layout(width=width),description='Pix size',description_tooltip="Pixel size in microns",continuous_update=c_update)
+        self.pixel_size.layout.visibility = 'hidden'  
+
+        self.Size_source = widgets.FloatSlider( min=0.01, max=100,value=self.Size_source,base=10, style =style, layout=Layout(width=width),description='σ Source',description_tooltip="Spatial extension of the source in arcseconds",continuous_update=c_update)
+        self.Line_width = widgets.FloatSlider( min=0.01, max=100,value=self.Line_width,base=10, style =style, layout=Layout(width=width),description='Eq width (Å)',description_tooltip="Spectral extension of the source/emission line in Å ",continuous_update=c_update)
+
+
+        self.wavelength = widgets.FloatSlider( min=50, max=1000,value=self.wavelength,base=10, style =style, step=0.1, layout=Layout(width=width),description='Observed λ',description_tooltip="Oberved λ in Å (only used for conversions)",continuous_update=c_update)
+        self.Δλ = widgets.FloatSlider( min=-250, max=250,value=-10,base=10, style =style, layout=Layout(width='400px'),description='Δλ',description_tooltip="Distance to the emission line being analyzed in pixels",continuous_update=c_update)
+        self.Δx = widgets.FloatSlider( min=-50, max=50,value=0,base=10, style =style, layout=Layout(width='400px'),description='Δx',description_tooltip="Distance to the source being analyzed in pixels",continuous_update=c_update)
+        self.Throughput_FWHM = widgets.FloatLogSlider( min=1, max=5,value=np.log10(self.Throughput_FWHM),base=10, style =style, layout=Layout(width='400px'),description='TH FWHM',description_tooltip="Instrument throughput FWHM in  Å. If an instrument-specific λ-dependent throughput is added to the repository, this csv file will be used.")#5.57e-18
+        self.Redshift = widgets.FloatSlider( min=0.01, max=10,value=self.Redshift,base=10, step=0.01, style =style, layout=Layout(width='400px'),description='Redshift',description_tooltip="Redshift only considered to shift blackbody spectra or QSO/Star spectra. Flux will stay based on source observed surface brightness. Changes also the kpc size",continuous_update=c_update)
+        # TODO verify that this stack is well taken into account into the CNR computation
+        self.lambda_stack = widgets.IntSlider( min=1, max=200,value=1, layout=Layout(width=width),description='λ Stack (pix)',step=0.1,description_tooltip="Number of spectral slices used to stack cube (spectral pix)",continuous_update=c_update)
+
+        self.Spectral_resolution = widgets.IntSlider( min=90, max=10000,value=self.Spectral_resolution,base=10, style =style, layout=Layout(width=width),description='R (λ/dλ) ',description_tooltip="Instrument spectral resolution λ/dλ",continuous_update=c_update)
+        # self.Slitwidth = widgets.FloatSlider( min=0.1, max=600,value=self.Slitwidth,base=10, style =style, layout=Layout(width=width),description='Slit ["]',description_tooltip="Width of the slit [''] ")
+        self.SlitDims = widgets.FloatRangeSlider( min=0.001, max=600,value=(self.Slitwidth,self.Slitlength),base=10, step=0.001, style =style, layout=Layout(width=width),description='Slit dims["]',description_tooltip="Width and length of the slit [''] (put same value for fibers) ")
+        
+        self.minmax = widgets.FloatRangeSlider( min=0, max=1,value=(0,1),base=10, step=0.001, style =style, layout=Layout(width=width),description='Vmin/Vmax',description_tooltip="Color map min/max",continuous_update=c_update)
+        
+        self.dispersion = widgets.FloatSlider( min=0.01, max=5,value=self.dispersion,base=10, style =style, step=0.001, readout_format='.2f', layout=Layout(width=width),description='Dispersion',description_tooltip="Dispersion at the detector Å/pix ",continuous_update=c_update)
+
+        self.cosmic_ray_loss_per_sec = widgets.FloatSlider( min=0, max=0.1,value=self.cosmic_ray_loss_per_sec,base=10, style =style,step=0.0001,readout_format='.4f', layout=Layout(width=width),description='CR loss',description_tooltip="Cosmic ray loss per second. eg. 0.01 would mean that 1 sec image looses 1% pixels due to cosmic rays",continuous_update=c_update)
+
+        self.gals = ["Rest-frame: COSMOS " + os.path.basename(f).replace(".txt","") for f in glob.glob("../data/Spectra/GAL_COSMOS_SED/*.txt")]
+        self.QSOs = ["Rest-frame: Salvato " + os.path.basename(f).replace(".txt","") for f in glob.glob("../data/Spectra/QSO_SALVATO2015/*.txt")]
+        self.spectra_options = ["Observed-frame: Baseline Spectra", "Rest-frame: Baseline Lyα (1216Å)", "Rest-frame: Baseline CIV (1549Å)", "Rest-frame: Baseline OVI (1033Å)", "Rest-frame: Baseline CIII (1908Å)","galaxy_disk_cube-resampled_phys","galaxy_disk_cube-resampled","galaxy_and_cgm_cube-resampled_phys","galaxy_and_cgm_cube-resampled","CGM_cube-resampled_phys","CGM_cube-resampled",]  + self.gals + self.QSOs + ["Rest-frame: Blackbody 5900 K (09V)","Rest-frame: Blackbody 1500 K (BOV)","Rest-frame: Blackbody 9000 K (B3V)","Rest-frame: Blackbody 480 K (AOV)","Rest-frame: Blackbody 8810 K (A2V)","Rest-frame: Blackbody 8160 K (A5V)","Rest-frame: Blackbody 7020 K (FOV)","Rest-frame: Blackbody 6750 K (F2V)","Rest-frame: Blackbody 6530 K (F5V)","Rest-frame: Blackbody 930 K (GOV)","Rest-frame: Blackbody 5830 K (G2V)","Rest-frame: Blackbody 5560 K (G5V)","Rest-frame: Blackbody 240 K (KOV)","Rest-frame: Blackbody 5010 K (K2V)","Rest-frame: Blackbody 4560 K (K4V)","Rest-frame: Blackbody 4340 K (K5V)","Rest-frame: Blackbody 4040 K (K7V)","Rest-frame: Blackbody 3800 K (MOV)","Rest-frame: Blackbody 3530 K (M2V)","Rest-frame: Blackbody 3380 K (M3V)","Rest-frame: Blackbody 3180 K (M4V)","Rest-frame: Blackbody 3030 K (M5V)","Rest-frame: Blackbody 2850 K (M6V)"] + ["Observed-frame: UVSpectra 1538p477 NUV~16.6","Observed-frame: UVSpectra 1821p643 NUV~14",'Observed-frame: UVSpectra 0044p030 NUV~16.5',"Observed-frame: UVSpectra mrk509","Observed-frame: UVSpectra 2344p092","Observed-frame: UVSpectra 1637p574","Observed-frame: UVSpectra 1115p080","Observed-frame: UVSpectra 0414m060","Observed-frame: UVSpectra 0115p027","Observed-frame: UVSpectra 2251p113","Observed-frame: UVSpectra 2201p315","Observed-frame: UVSpectra 1928p738","Observed-frame: UVSpectra 1700p518","cube 10 kpc galaxy + Lya em CGM+Filament","cube 30 kpc galaxy + Lya em CGM+Filament","cube 100 kpc galaxy + Lya em CGM+Filament","lya_cube_merged_with_artificial_source_CU_1pc-resampled_phys","lya_cube_merged_with_artificial_source_CU_1pc-resampled","cube_01-resampled_phys","cube_01-resampled"]#,"lya_cube_merged_with_artificial_source_CU_1pc_map","lya_cube_merged_with_artificial_source_CU_1pc_resampled"] 
+        # self.spectra     = widgets.Dropdown(options=self.spectra_options, layout=Layout(width='350px'),description='Spectra',value="galaxy_and_cgm_cube-resampled_phys",continuous_update=c_update)#Observed-frame: Baseline Spectra   "lya_cube_merged_with_artificial_source_CU_1pc-remap"
+        self.spectra     = widgets.Dropdown(options=self.spectra_options, layout=Layout(width='350px'),description='Spectra',value="Observed-frame: Baseline Spectra",continuous_update=c_update)#Observed-frame: Baseline Spectra   "lya_cube_merged_with_artificial_source_CU_1pc-remap"
+        self.units       = widgets.Dropdown(options=["ADU/frame","e-/frame","photons/frame","e-/hour","photons/hour","e-/second","photons/second"], layout=Layout(width='350px'),description='Units',value="ADU/frame")# TODO add ergs/cm2/... "amplified e-/frame","amplified e-/hour",
+
+        # widgets.Dropdown(options=["S2: 0.053 ADU/e-, FW=5.6 KADU","S2_hdr: 0.97 ADU/e-, FW=52 KADU","1: 0.02 ADU/e-, FW=2.1 KADU","1': 0.4 ADU/e-, FW=40 KADU","2: 0.04 ADU/e-, FW=4.7 KADU","2018: 0.5 ADU/e-, FW=56 KADU","2022: 0.2 ADU/e-, FW=22 KADU","2023_noOS: 0.04 ADU/e-, FW=39 KADU"], layout=Layout(width='350px'),description='RO seq',value="S2_hdr: 0.97 ADU/e-, FW=52 KADU",continuous_update=c_update)
+        self.QElambda = widgets.Checkbox(value=True,description='Throughput(λ)',disabled=False,tooltip="Check this box to apply λ QE dependancy",layout=Layout(width="217px"))
+        self.atmlambda = widgets.Checkbox(value=True,description='atm(λ)',disabled=False,tooltip="Check this box to apply λ atm transmission dependancy",layout=Layout(width="217px"))
+        self.sky_lines = widgets.Checkbox(value=True,description='Sky lines',disabled=False,tooltip="Check this box to add sky emission lines",layout=Layout(width="217px"))
+        self.test = widgets.Checkbox(value=True,description='F',disabled=False,tooltip="Check this box to use the method where we compute all flux and then divide by pixels or compute directly the flux per pixel",layout=Layout(width="100px"))
+        # self.test.layout.visibility = 'hidden'  
+
+
+        self.fraction_lya = widgets.FloatSlider( min=0, max=0.2,value=0.05,style = style, layout=Layout(width='217px'),description='Lya fraction',step=0.001,readout_format='.2f',tooltip="Fraction of E(Lya)/E(NUV)")
+        self.fraction_lya.layout.visibility = 'hidden'  
+
+        self.save_plot_button = widgets.Button(description="Save Plot", layout=Layout(width='auto'))
+        self.save_data_button = widgets.Button(description="Save Data", layout=Layout(width='auto'))
+
+
+        self.reset = widgets.Button(value=False,description='↺',disabled=False,button_style='', layout=Layout(width="30px")) 
+
+
+        self.change = widgets.Checkbox(value=True,description='change',disabled=False, layout=Layout(width='147px'),description_tooltip="Use this check box to use a log scale for the x axis")
+        self.change.layout.visibility = 'hidden'  
+        self.spectrograph.layout.visibility = 'hidden'  
+        # self.lambda_stack = widgets.FloatSlider( min=10*self.wavelength/self.Spectral_resolution, max=self.Bandwidth*10,value=self.Bandwidth, layout=Layout(width=width),description='λ width [Å]',step=0.1,description_tooltip="Wavelength range used to stack signal. Min = 1 resolution element = 5pixels = 1Å, Max = total spectra =bandwidth = 200Å")   
+       
+        if "FIREBall" in instrument:
+            options = self.fb_options if self.follow_temp.value else self.fb_options_no_temp
+        else:
+            options = self.other_options
+        self.x_axis=widgets.Dropdown(options=options,value=self.x_axis,description='X axis', layout=Layout(width=small),description_tooltip="Variable used to analyze the evolution of the SNR.")
+
+        self.follow_temp.layout.visibility = 'hidden'  
+        # if ("FIREBall" not in instrument) & ("SCWI" not in instrument) :
+        if self.EM_gain.value == 1 :
+            self.counting_mode.layout.visibility = 'hidden'  
+
+        self.smearing.layout.visibility = 'hidden'
+        self.temperature.layout.visibility = 'hidden'
+        if self.follow_temp.value:
+            self.Dark_current.value = self.dark_poly(self.temperature.value)#10**
+            self.smearing.value = self.smearing_poly(self.temperature.value)
+            # self.CIC_charge.value = self.CIC_poly(self.temperature.value)
+  
+
+        # print(self.new.QE,self.new.N_images_true)
+        # self.Signal_el = self.new.Signal_el
+
+        wids = widgets.interactive(self.update,x_axis=self.x_axis,xlog=self.xlog,log=self.ylog, SNR_res=self.SNR_res,smearing=self.smearing,counting_mode=self.counting_mode,exposure=self.exposure,Sky=self.Sky,acquisition_time=self.acquisition_time,Signal=self.Signal,EM_gain=self.EM_gain,RN=self.RN, CIC_charge=self.CIC_charge, Dark_current=self.Dark_current,temperature=self.temperature,follow_temp=self.follow_temp,fwhm = self.fwhm,QE=self.QE, extra_background=self.extra_background,
+            Collecting_area=self.Collecting_area, pixel_scale=self.pixel_scale, Throughput=self.Throughput, Spectral_resolution=self.Spectral_resolution, SlitDims=self.SlitDims, dispersion=self.dispersion,
+            Size_source=self.Size_source,Line_width=self.Line_width,wavelength=self.wavelength,Δλ=self.Δλ,Δx=self.Δx, Atmosphere=self.Atmosphere, pixel_size=self.pixel_size,cosmic_ray_loss_per_sec=self.cosmic_ray_loss_per_sec,lambda_stack=self.lambda_stack,#change=self.change,
+            spectra=self.spectra,units=self.units,Throughput_FWHM=self.Throughput_FWHM, QElambda=self.QElambda, atmlambda=self.atmlambda, fraction_lya=self.fraction_lya,sky_lines=self.sky_lines,Redshift=self.Redshift, IFS=self.IFS, spectrograph=self.spectrograph,interpolation=self.interpolation,source_im=self.source_im,minmax=self.minmax, test=self.test,dependencies=self.dependencies)
+        
+        wids2 = widgets.interactive(self.update_instrument,instrument=self.instrument)
+        # Question: why do we need to reset it to True here?
+        self.change.value=True
+
+        def reset(_):
+            self.update_instrument(self.instrument.value)
+            self.Signal.value = self.instruments_dict[self.instrument.value]["Signal"]
+        self.reset.on_click(reset)
+
+        def save_plot(_):
+            self.fig.savefig("/tmp/fig1.png", dpi=100, bbox_inches="tight")
+            self.fig2.savefig("/tmp/fig2.png", dpi=100, bbox_inches="tight")
+            self.fig3.savefig("/tmp/fig3.png", dpi=100, bbox_inches="tight")
+        self.save_plot_button.on_click(save_plot)
+
+        def save_data(_):
+            self.f = lambda x: self.wavelength.value + (self.dispersion.value/10) * (x - n1/2)
+            fitswrite(self.ifs_cube.T,"/tmp/ifs_cube.fits")
+            fitswrite(np.transpose(self.ifs_cube_stack,(1,2,0)),"/tmp/ifs_cube_stack.fits")
+            # fitswrite(self.imaADU_without_source,"/tmp/imaADU_without_source.fits")
+            # fitswrite(self.imaADU_source,"/tmp/imaADU_source.fits")
+            # fitswrite(self.imaADU_stack_without_source,"/tmp/imaADU_stack_without_source.fits")
+            # fitswrite(self.imaADU_stack_only_source,"/tmp/imaADU_stack_only_source.fits")
+            np.savetxt("/tmp/spectra.csv", np.asarray([ self.f(np.arange(n1)), self.ifs_spectra[0].get_ydata(), self.ifs_spectra_stack[0].get_ydata(), self.ifs_spectra_background[0].get_ydata(), self.ifs_spectra_background_stack[0].get_ydata()  ]), delimiter=",",header="wavelength,ifs_spectra, ifs_spectra_stack, ifs_spectra_background, ifs_spectra_background_stack")
+            return
+        self.save_data_button.on_click(save_data)
+
+
+        self.obs_tab = VBox([HBox([self.Signal,self.Size_source ]), HBox([self.Sky,self.Line_width])]) 
+        self.strat_tab = VBox([HBox([self.Atmosphere,self.acquisition_time ]), HBox([self.exposure,self.wavelength])  , HBox([self.lambda_stack])     ])
+        self.inst_tab = VBox([HBox([self.Collecting_area,self.pixel_scale, self.spectrograph ]), HBox([self.Throughput,self.fwhm ])])
+        self.spectro_tab = VBox([HBox([self.Spectral_resolution,self.SlitDims ]), HBox([self.dispersion,self.IFS ])]) 
+        self.det_tab = VBox([HBox([self.QE,self.RN ]), HBox([self.Dark_current,self.extra_background]),          HBox([self.cosmic_ray_loss_per_sec,self.EM_gain ]), HBox([self.CIC_charge,self.counting_mode])])#,self.pixel_size
+        # self.amp_tab = HBox([self.EM_gain,self.CIC_charge])
+        self.fb_tab = VBox([HBox([self.follow_temp ]),HBox([self.temperature,self.smearing]),HBox([self.change]) ])
+        self.im_tab =         VBox([HBox([self.spectra,self.Redshift,self.Throughput_FWHM ]), HBox([self.units,self.Δx, self.Δλ])   , HBox([self.interpolation,self.QElambda,self.atmlambda,self.sky_lines,self.source_im]) , HBox([self.minmax])   ]) #self.fraction_lya
+        
+        # if ("FIREBall-2" in instrument):
+        #     tab_contents = [ "Observed Source", "Observation strategy" , "Instrument Design","Detector performance",  "Spectrograph Design","FIREBall specific"]#, ''] #,"Amplified Detector"
+        #     children = [ self.obs_tab, self.strat_tab,  self.inst_tab,  self.det_tab,self.spectro_tab, self.fb_tab]#, self.]
+        # else:
+        tab_contents = [ "Observed Source", "Observation strategy" , "Instrument Design","Detector performance",  "Spectrograph Design"]#,"Imaging"] #,"Amplified Detector"
+        children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab]#, self.im_tab] 
+
+
+
+
+        self.controls = widgets.Tab()# Accordion
+        self.controls.children = children
+        for i, name in enumerate(tab_contents):
+            self.controls.set_title(i, name)
+
+        self.out1 = widgets.Output()
+        self.out2 = widgets.Output()
+        self.out3 = widgets.Output()
+        # self.output_tabs = widgets.Tab(children = [self.out2, self.out1]);self.output_tabs.set_title(0, 'Image');self.output_tabs.set_title(1, 'SNR')
+        if self.IFS.value is False:
+            self.output_tabs = widgets.Tab(children = [self.out1, self.out2]); self.output_tabs.set_title(0, 'SNR');self.output_tabs.set_title(1, 'Spectral image')
+            #;self.output_tabs.set_title(2, 'IFS Image')
+            self.plot_shown = False#  # Reset the plot flag when hiding tab 3    # self.output_tabs.selected_index = 0  # Sélectionner un autre onglet par défaut
+            self.first_plot = True
+        else:    
+            self.output_tabs = widgets.Tab(children = [self.out1, self.out2, self.out3]); self.output_tabs.set_title(0, 'SNR');self.output_tabs.set_title(1, 'Spectral image');self.output_tabs.set_title(2, 'IFS Image')
+            self.plot_shown = True#  # Reset the plot flag when hiding tab 3    # self.output_tabs.selected_index = 0  # Sélectionner un autre onglet par défaut
+            self.first_plot = False
+
+        def on_tab_change(change): 
+            self.on_instrument_change()
+
+
+
+        self.output_tabs.observe(on_tab_change, names='selected_index')
+        
+        def database_change(change):
+            sheet_id = "1Ox0uxEm2TfgzYA6ivkTpU4xrmN5vO5kmnUPdCSt73uU"
+            sheet_name = "instruments.csv"
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+            with self.out1:
+                inst = self.instrument.value
+                if self.database.value == "Online DB":
+                    self.instruments = Table.from_pandas(pd.read_csv(url))
+                elif self.database.value == "Local DB":
+                    # instruments = Table.read("../data/Instruments/Instruments.csv")
+                    # instruments = Table.read("../Instruments.csv")
+                    instruments = Table.from_pandas(pd.read_excel("../instruments.xlsx"))
+
+                    self.instruments = instruments[instruments.colnames]
+                    for col_name in self.instruments.colnames[3:]:
+                        self.instruments[col_name] = to_float_or_nan(self.instruments[col_name])
+                self.instruments_dict = {name: {key: val for key, val in zip(self.instruments["Charact."][:], self.instruments[name][:]) if not isinstance(key, np.ma.core.MaskedConstant) and not isinstance(val, np.ma.core.MaskedConstant)} for name in self.instruments.colnames[3:]}
+                self.instrument.options = self.instruments.colnames[3:]
+                if inst in self.instruments.colnames[3:]:
+                    # self.instrument.value = inst
+                    self.update_instrument(instrument)
+                else:
+                    self.instrument.value = self.instruments.options[0]
+            return
+            
+        self.database.observe(database_change, names='value')
+        
+        
+        new = VBox([ HBox([self.instrument, self.database, self.x_axis,self.SNR_res,self.xlog, self.ylog,self.reset,self.save_plot_button,self.save_data_button ,self.test,self.dependencies  ])  ,self.controls , self.output_tabs ]) #
+
+
+        with self.out1: # before because then the arrays are transformed into numbers
+            # print(self.IFS.value)
+            self.fig = self.new.PlotNoise(x=x_axis)
+            args, _, _, locals_ = inspect.getargvalues(inspect.currentframe())
+            self.v=[]
+            for j, ax in enumerate(self.fig.axes):
+                if j==2:
+                    label = '%s [Best]=%s [%s]\nSNR [Best]=%0.2f [%0.2f]'%(x_axis,float_to_latex(self.time),float_to_latex(exposure_time[np.nanargmax(self.new.SNR)]),self.new.SNR[self.arg],np.nanmax(self.new.SNR))#, self.new.gain_thresholding[arg])
+                    self.v.append(ax.axvline(self.time,ls=':',c='k',label=label))
+                    ax.legend(loc='upper right')
+                else:
+                    self.v.append(ax.axvline(self.time,ls=':',c='k'))
+            self.ax0 =  self.fig.axes[0]
+            self.ax1 =  self.fig.axes[1]
+            self.ax2 =  self.fig.axes[2]
+            self.ax3 =  self.fig.axes[3]
+            self.ax3.set_ylim((-19,-12.5))
+            self.ax0.set_xscale('log')
+            self.fig.canvas.toolbar_position = 'bottom'
+            title = 'Instrument=%s, FOV=%samin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$'%(instrument, self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0])
+            self.ax0.set_title(title,y=0.97,fontsize=10)
+
+            plt.show(self.fig)  
+        self.im,self.im_stack = self.new.SimulateFIREBallemCCDImage( Bias="Auto",  p_sCIC=0,  SmearExpDecrement=50000,  source="Baseline Spectra",size=[n1, n2], OSregions=[0, max(n2,n1)], name="Auto", spectra="-", cube="-", n_registers=604, save=False, field="targets_F2.csv",QElambda=self.QElambda.value,atmlambda=self.QElambda.value,fraction_lya=self.fraction_lya.value, Full_well=self.Full_well, Altitude=self.Altitude, conversion_gain=self.conversion_gain, Throughput_FWHM=self.Throughput_FWHM.value,sky_lines=self.sky_lines.value, Redshift=self.Redshift.value,source_image=self.source_im.value)
+        # self.im,self.im_stack, self.cube_stack, self.im0, source_im_wo_atm, self.imaADU_stack_only_source, self.imaADU_without_source, self.imaADU_stack_without_source, self.imaADU_source = self.new.SimulateFIREBallemCCDImage( Bias="Auto",  p_sCIC=0,  SmearExpDecrement=50000,  source="Baseline Spectra",size=[n1, n2], OSregions=[0, max(n2,n1)], name="Auto", spectra="-", cube="-", n_registers=604, save=False, field="targets_F2.csv",QElambda=self.QElambda.value,atmlambda=self.QElambda.value,fraction_lya=self.fraction_lya.value, Full_well=self.Full_well, Altitude=self.Altitude, conversion_gain=self.conversion_gain, Throughput_FWHM=self.Throughput_FWHM.value,sky_lines=self.sky_lines.value, Redshift=self.Redshift.value)
+
+        center = n1/2
+        f = lambda x: self.wavelength.value + self.dispersion.value * (x - center)
+        g = lambda x: (x - self.wavelength.value) / self.dispersion.value + center
+     
+        with self.out2:
+            self.current_cmap = cmocean.cm.deep# current_cmap = cmocean.cm.solar# self.current_cmap = cmocean.cm.thermal
+            
+
+            self.current_cmap.set_bad(color='black')
+            self.bins=np.arange(-100,4000,100)
+            self.bins=np.linspace(-100,np.nanmax(self.im),100)
+
+            self.mod = mostFrequent(self.im_stack[:20,:].flatten())
+
+            self.limit = self.mod+self.new.n_threshold * self.RN.value
+
+            self.fig2 = plt.figure(figsize=(12, 8),)
+            gs = self.fig2.add_gridspec(2, 2, height_ratios=[0.5, 1])
+            self.nax = self.fig2.add_subplot(gs[0, 0])      # Top-left
+            self.nax0 = self.fig2.add_subplot(gs[0, 1], sharex = self.nax, sharey = self.nax)     # Top-right
+            gs_nax2 = gs[1, 0].subgridspec(2, 1, height_ratios=[1, 1])
+            self.nax2_1 = self.fig2.add_subplot(gs_nax2[0, 0], sharex = self.nax)  # Bottom-left, top half
+            self.nax2 = self.fig2.add_subplot(gs_nax2[1, 0])    # Bottom-left, bottom half
+            self.nax1 = self.fig2.add_subplot(gs[1, 1], sharex = self.nax) 
+            
+            self.nax1_secondary = self.nax1.secondary_xaxis("top", functions=(f,g))
+            self.nax2_1_secondary = self.nax2_1.secondary_xaxis("top", functions=(f,g))
+            self.nax2_1.set_title('Wavelength (nm)',fontsize=10)
+            self.nax2_1.set_yscale(self.yscale)
+
+            # if self.counting_mode.value:
+            #     stacked_image = np.nansum(self.cube_stack>self.limit,axis=0)
+            #     im0 = self.nax0.imshow(stacked_image, aspect="auto",cmap=self.current_cmap)
+            # else:
+            im0 = self.nax0.imshow(self.im_stack, aspect="auto",cmap=self.current_cmap)#,interpolation=interpolation)
+            im = self.nax.imshow(self.im, aspect="auto",cmap=self.current_cmap)#,interpolation=interpolation)
+            labels =  ['%s: %0.3f (%0.1f%%)'%(name,getattr(self.new,"electrons_per_pix")[self.new.i,j],100*getattr(self.new,"electrons_per_pix")[self.new.i,j]/np.sum(getattr(self.new,'electrons_per_pix')[self.new.i,:])) for j,name in enumerate(self.new.names)]
+            self.nax.plot(0,0,".",label="\n".join(labels))
+            self.nax.legend(loc="upper left",handlelength=0, handletextpad=0, fancybox=True,markerscale=0,fontsize=6)
+            # self.nax.text(0,0,"\n".join(labels))
+            im2=self.nax0.imshow(self.im_stack, aspect="auto",cmap=self.current_cmap)#,interpolation=interpolation)
+            self.nax0.get_xaxis().set_ticks([])
+            self.nax0.get_yaxis().set_ticks([])
+            self.nax.get_xaxis().set_ticks([])
+            self.nax.get_yaxis().set_ticks([])
+            self.nax.set_title('Single image: FOV = %i" × %iÅ, λ~%iÅ'%(100*self.pixel_scale.value,500*self.dispersion.value,10*self.wavelength.value))
+            self.nax0.set_title('Stacked image: Pixel size = %0.2f" × %0.2fÅ'%(self.pixel_scale.value,self.dispersion.value))
+            self.nax1.set_title('Wavelength (nm)',fontsize=10)
+
+
+            self.nax2.set_xlabel("Pixels' values [Unit]")
+            self.nax1.set_xlabel('Pixels')
+            # FIXME besure to only use correctly the factor 2.35
+            self.l1 = self.nax1.plot(self.im[:,int(n1/2-self.Line_width.value/self.pixel_scale.value):int(n1/2+self.Line_width.value/self.pixel_scale.value)].mean(axis=1),ls='-',lw=3,label='Single exp profiles',alpha=0.2)
+            self.l2 = self.nax1.plot(np.linspace(0,n1,n1),self.im[int(n2/2 - self.Size_source.value/self.pixel_scale.value/2/2.35):int(n2/2 + self.Size_source.value/self.pixel_scale.value/2/2.35),:].mean(axis=0),ls='-',lw=3,alpha=0.2,c="k")
+
+
+
+            # self.final_sky_before_convolution =  self.nax2_1.plot(self.new.final_sky_before_convolution*np.ones(n1),ls='-',c="k",label="final_sky_before_convolution")#,lw=3,alpha=0.2)
+            # self.atm_trans_before_convolution =  self.nax2_1.plot(self.new.atm_trans_before_convolution*np.ones(n1),ls=':',c="k",label="atm_trans_before_convolution")#,lw=3,alpha=0.2)
+
+            self.absorption         =  self.nax2_1.plot(self.new.atm_trans*np.ones(n1),ls=':',c="k",label=r"Atm$_{Trans}$(λ) for Signal")#,lw=3,alpha=0.2)
+            self.emission_lines     =  self.nax2_1.plot(self.new.final_sky*np.ones(n1),ls='-',c="k",label=r"Sky(λ) Em lines")#,lw=3,alpha=0.2)
+            self.Throughput_curve     =  self.nax2_1.plot(self.new.Throughput_curve*np.ones(n1),ls='-.',c="k",label="[QExThroughtput](λ)")#,lw=3,alpha=0.2)
+            self.nax2_1.legend(loc='lower right',fontsize=8,title="Transmission curves")
+            # self.nax2_1.set_ylim((-0.05,1.05))
+            self.nax2_1.set_ylim((1e-2,1.05))
+
+
+            # self.nax1bis = self.nax1.twinx()
+            self.hw, self.hl =  self.Slitwidth/2/self.pixel_scale.value ,  self.Slitlength/2/self.pixel_scale.value
+            self.nax.plot([n1/2 - self.hw,n1/2 + self.hw,n1/2 + self.hw,n1/2 - self.hw,n1/2 - self.hw],[n2/2 - self.hl,n2/2 - self.hl,n2/2 + self.hl,n2/2 + self.hl,n2/2 - self.hl],"-k")
+            self.nax0.plot([n1/2 - self.hw,n1/2 + self.hw,n1/2 + self.hw,n1/2 - self.hw,n1/2 - self.hw],[n2/2 - self.hl,n2/2 - self.hl,n2/2 + self.hl,n2/2 + self.hl,n2/2 - self.hl],"-k", label="Slit=%0.1f'' × %0.1f''"%(self.Slitwidth,self.Slitlength))
+            self.slit_text = AnchoredText("Slit=%0.1f'' × %0.1f''"%(self.Slitwidth,self.Slitlength), frameon=True, loc=4, pad=0.5,prop={'fontsize': 8})
+            plt.setp(self.slit_text.patch, facecolor='white', alpha=0.5)
+            self.nax.add_artist(self.slit_text)
+            
+            
+            self.nax0.legend(loc='upper right',fontsize=8)
+
+            self.profile = np.mean(im0.get_array().data[:,int(n1/2-self.Line_width.value/self.pixel_scale.value):int(n1/2+self.Line_width.value/self.pixel_scale.value)],axis=1)
+            spatial_profile = self.im[:,:].mean(axis=1)
+            # what means this convolution
+            self.nax1.lines[0].set_ydata(spatial_profile)#np.convolve(spatial_profile,3,mode="same"))
+            self.profile = np.mean(im0.get_array().data[:,:],axis=1)
+            self.l1_s = self.nax1.plot(self.profile,label='Stack. spatial prof',c=self.l1[0].get_color())
+            self.l2_s = self.nax1.plot(self.im_stack[int(n2/2 - self.Size_source.value/self.pixel_scale.value/2/2.35):int(n2/2 + self.Size_source.value/self.pixel_scale.value/2/2.35),:].mean(axis=0),label='Stack. spectral prof',c=self.l2[0].get_color())
+            
+            self.nax1.get_xaxis().set_ticks_position('bottom')
+
+            self.nax1.tick_params(axis='x', labelbottom=True)
+
+            
+            try:
+                self.popt, self.pcov = curve_fit(gaus,np.arange(len(self.profile)),self.profile,p0=[np.ptp(self.profile), 50, 5, self.profile.min()])
+            except RuntimeError:
+                self.popt = [0,0,0,0]
+            # self.fit = PlotFit1D(x= np.arange(len(self.profile)),y=self.profile,deg="gaus", plot_=False,ax=self.nax1bis,c="k",ls=":",P0=[np.ptp(self.profile), 50, 5, self.profile.min()])
+            # self.nax1bis.plot( np.arange(len(self.profile)),gaus( np.arange(len(self.profile)),*self.popt),":k",label="SNR=%0.1f/%0.1f=%0.1f"%(self.popt[0]**2,self.profile[:20].std(),self.popt[0]**2/self.profile[:20].std()))
+            self.l3_s = self.nax1.plot( np.arange(len(self.profile)),gaus( np.arange(len(self.profile)),*self.popt),":k",label="SNR=%0.1f/%0.1f=%0.1f"%(self.popt[0]**2,self.profile[:20].std(),self.popt[0]**2/self.profile[:20].std()))
+
+            self.nax1.set_xlim((0,n1))
+            self.nax1.legend(loc="upper right",fontsize=8,title="Averaged profiles")
+            # self.nax1bis.legend(loc='upper right',fontsize=8,title="Averaged profiles")
+            _,_,self.bars1 = self.nax2.hist(self.im.flatten(),bins=self.bins,alpha=0.3,color=self.l1[0].get_color(),label='Single image')
+            _,_,self.bars2 = self.nax2.hist(self.im_stack.flatten(),bins=self.bins,alpha=0.3,color=self.l2[0].get_color(),label='Averaged stack')
+            # TODO change the 40 in the next formula
+            title = 'Signal kept=%i%%, RN kept=%i%%, Signal/tot=%i%%'%(100*self.new.Photon_fraction_kept[0], 100*self.new.RN_fraction_kept[0],100*(np.mean(self.im_stack[40:-40,:])-np.mean(self.im_stack[:20,:]))/np.mean(self.im_stack[40:-40,:]))
+            self.nax2.plot([self.mod,self.mod],[0,100],c="k",ls=":",label="Bias %0.3f, PC limit %0.3f (%s):\n%s"%(self.mod,self.limit[i], self.new.counting_mode, title))
+            self.nax2.plot([self.limit,self.limit],[0,100],c="k",ls=":")#,label="PC limit %i: %s"%(self.limit, title))
+                        
+            self.nax2.legend(loc='upper right',fontsize=8,title="Histogram - Pixels'values")
+            self.nax2.set_xlim(xmin=-10, xmax=np.nanmax(self.bins))
+            self.cax = make_axes_locatable(self.nax).append_axes('bottom', size='15%', pad=0.05)
+            self.cax0 = make_axes_locatable(self.nax0).append_axes('bottom', size='15%', pad=0.05)
+            self.cbar1 = self.fig2.colorbar(im, cax=self.cax, orientation='horizontal')
+            self.cbar2 = self.fig2.colorbar(im2, cax=self.cax0, orientation='horizontal')
+            self.cbar1.formatter.set_powerlimits((0, 0))
+            self.cbar2.formatter.set_powerlimits((0, 0))
+            self.cbar1.formatter.set_useMathText(True)
+            self.cbar2.formatter.set_useMathText(True)
+
+
+            self.fig2.canvas.toolbar_position = 'bottom'
+            self.fig2.tight_layout()
+            plt.show(self.fig2)
+
+
+        with self.out3:
+            self.out3.clear_output(wait=True)
+            self.current_cmap = cmocean.cm.deep# current_cmap = cmocean.cm.solar# self.current_cmap = cmocean.cm.thermal
+            self.current_cmap.set_bad(color='black')
+            n3 = int(np.sqrt(60*60*self.FOV_size)/self.Slitwidth)
+
+            self.fig3 = plt.figure(figsize=(12, 8))
+            gs = self.fig3.add_gridspec(2,2,height_ratios=[2,0.5])
+            self.nax20 = self.fig3.add_subplot(gs[0,0])
+            self.nax21 = self.fig3.add_subplot(gs[0,1], sharex = self.nax20, sharey = self.nax20)
+            self.only_spectra=False
+            if self.only_spectra:
+                self.nax2s = self.fig3.add_subplot(gs[1,:]) # HACK vincent subplot change this
+            else:
+                self.nax2s = self.fig3.add_subplot(gs[1,0]) # HACK vincent subplot change this
+                self.nax2_rp = self.fig3.add_subplot(gs[1,1]) # HACK vincent subplot change this
+                self.nax2_rp2 = self.nax2_rp.twinx()
+
+            self.nax2s_secondary = self.nax2s.secondary_xaxis("top", functions=(f,g))
+
+
+
+
+
+            self.nax20.set_xlabel("Spatial pixel")
+            self.nax20.set_ylabel("Spatial pixel")
+            self.nax21.set_xlabel("Spatial pixel")
+            self.nax21.set_ylabel("Spatial pixel")
+            self.nax20.set_title("Single cube: %ipix × %ipix"%(n2,n3),fontsize=8)
+            self.nax21.set_title("Stacked Cube: %0.1f' × %0.1f', full FOV= %0.1f' × %0.1f'"%(n2/self.pixel_scale.value/60,n3/self.pixel_scale.value/60,np.sqrt(self.FOV_size),np.sqrt(self.FOV_size)),fontsize=8)
+
+
+            self.nax2s.set_title("Wavelength (nm)",fontsize=8)
+            self.nax2s.set_xlabel("Spectral pixel")
+            self.nax2s.set_ylabel("Flux")
+            if ~self.only_spectra:
+                self.nax2_rp.set_title("Radial profile",fontsize=8)
+                self.nax2_rp.set_xlabel("Spatial pixel")
+                self.nax2_rp.set_ylabel("Flux")
+                self.rp2 = self.nax2_rp.plot([np.nan],[np.nan],"k-", alpha=0.2,lw=3,label="Single")
+                self.rp = self.nax2_rp.plot([np.nan],[np.nan],"k-",label="Stack")
+                self.rp_fit = self.nax2_rp.plot([np.nan],[np.nan],"k:",label="Fit")
+                self.res1 =  self.nax2_rp.axvline(x=np.nan, color='red', linestyle='--',label="Half resolution elements",lw=0.5)
+                self.res2 =  self.nax2_rp.axvline(x=np.nan, color='red', linestyle='--',lw=0.5)
+                self.nax2_rp.legend(fontsize=7,loc="upper right",title="Radial profiles",title_fontsize=8)
+                self.diff = self.nax2_rp2.plot([np.nan],[np.nan],"k-",label="diff",alpha=0.2)
+
+
+            self.ifs_cube = np.zeros((n2,n1,n3))
+
+            self.wavelength_line1 = self.nax2s.axvline(int(n1/2)+0.5,ls='--',c='k',lw=0.7)
+            self.wavelength_line2 = self.nax2s.axvline(int(n1/2)+0.5,ls='--',c='k',lw=0.7)
+            if IFS:
+
+                self.ifs_spectra = self.nax2s.plot(self.im_stack[int(n2/2),:],"k-",lw=3,alpha=0.1,label="Spectra: On source")
+                self.ifs_spectra_stack = self.nax2s.plot(self.im[int(n2/2),:],"k--",alpha=0.5,label="Stacked spectra: On source")
+            
+                self.ifs_integ_spectra_stack = self.nax2s.plot(       np.nanmean(self.im[int(n2/2-self.Slitwidth/self.pixel_scale.value):int(n2/2+self.Slitwidth/self.pixel_scale.value),:],axis=0)      ,"k-",label="Integrated stacked spectra: On source")
+                x1,x2 = n3/2-(n2/n2)*self.Size_source.value/self.pixel_scale.value,n3/2+(n2/n2)*self.Size_source.value/self.pixel_scale.value
+                y1, y2 = n2/2-self.Size_source.value/self.pixel_scale.value,n2/2+self.Size_source.value/self.pixel_scale.value
+                self.stack_square = self.nax21.plot([x1,x2,x2,x1,x1],[y2,y2,y1,y1,y2],"k:")
+                
+                # self.ifs_spectra_background  = self.nax2s.plot(self.imaADU_without_source[int(n2/2),:],"k-",alpha=0)
+                # self.ifs_spectra_background_stack = self.nax2s.plot((self.im_stack-self.imaADU_stack_only_source)[int(n2/2),:],"k:",label="Spectra: Field edge (background)")
+
+
+                gaussian = norm.pdf(np.arange(-n3,n3,2), loc=0, scale=self.Size_source.value/2)
+                ratios = (gaussian - gaussian.min()) / (gaussian.max() - gaussian.min())
+                ratios_reshaped = ratios[np.newaxis, np.newaxis, :]
+                indices = np.array([np.random.permutation(n3) for _ in range(n1 * n2)])
+                indices = indices.reshape(n2, n1, n3)                                
+
+                self.ifs_cube = np.repeat(self.im[:, :, np.newaxis], n3, axis=2)
+                self.ifs_cube = np.take_along_axis(self.ifs_cube, indices, axis=1)
+                # self.ifs_cube += self.im[:, :, np.newaxis] * ratios_reshaped
+                self.ifs_cube_stack = np.ones((n2,n1,n3))#np.repeat( self.im_stack[:, :, np.newaxis], n3, axis=2)
+                # self.ifs_cube_stack = np.take_along_axis(self.im_stack, indices, axis=1)
+                # self.ifs_cube_stack += self.im_source[:, :, np.newaxis] * ratios_reshaped
+
+                # self.ifs_cube = np.repeat(self.imaADU_without_source[:, :, np.newaxis], n3, axis=2)
+                # self.ifs_cube = np.take_along_axis(self.ifs_cube, indices, axis=1)
+                # self.ifs_cube += self.imaADU_source[:, :, np.newaxis] * ratios_reshaped
+                # self.ifs_cube_stack = np.repeat( self.imaADU_source[:, :, np.newaxis], n3, axis=2)
+                # self.ifs_cube_stack = np.take_along_axis(self.ifs_cube_stack, indices, axis=1)
+                # self.ifs_cube_stack += self.imaADU_source[:, :, np.newaxis] * ratios_reshaped
+            else:
+                self.stack_square = self.nax21.plot([np.nan],[np.nan],"k:")
+                self.ifs_slice = self.nax20.imshow(np.nan*self.ifs_cube[:,0,:], aspect="auto",cmap=self.current_cmap)#,interpolation=interpolation)
+                self.ifs_slice_stack = self.nax21.imshow(np.nan*self.ifs_cube[:,0,:], aspect="auto",cmap=self.current_cmap)#,interpolation=interpolation)
+
+                self.ifs_spectra = self.nax2s.plot([0,n1],[np.nan,np.nan],"k-",lw=3,alpha=0.1,label="Spectra: On source")
+                self.ifs_spectra_stack = self.nax2s.plot([0,n1],[np.nan,np.nan],"k--",label="Stacked spectra: On source")
+                self.ifs_integ_spectra_stack = self.nax2s.plot([0,n1],[np.nan,np.nan],"k-",label="Integrated stacked spectra: On source")
+                self.ifs_spectra_background       = self.nax2s.plot([0,n1],[np.nan,np.nan],"k-",alpha=0)
+                self.ifs_spectra_background_stack = self.nax2s.plot([0,n1],[np.nan,np.nan],"k:",label="Spectra: Field edge (background)")
+                # self.ifs_slice = 0  # actually you need to initiate these variable in any case
+            self.nax2s.legend(fontsize=7,loc="upper right")
+            self.cax_slicer = make_axes_locatable(self.nax20).append_axes('right', size='5%', pad=0.05)
+            self.cax_slicer0 = make_axes_locatable(self.nax21).append_axes('right', size='5%', pad=0.05)
+            self.cbar_slicer1 = self.fig2.colorbar(im, cax=self.cax_slicer, orientation='vertical')
+            self.cbar_slicer2 = self.fig2.colorbar(im2, cax=self.cax_slicer0, orientation='vertical')
+            self.cbar_slicer1.formatter.set_powerlimits((0, 0))
+            self.cbar_slicer2.formatter.set_powerlimits((0, 0))
+            self.cbar_slicer2.formatter.set_useMathText(True)
+            self.cbar_slicer1.formatter.set_useMathText(True)
+
+
+            self.position1 = self.nax20.plot(int(n3/2),int(n2/2),"ro")
+            self.position2 = self.nax21.plot(int(n3/2),int(n2/2),"ro")
+            self.fig3.tight_layout()
+            self.fig3.canvas.toolbar_position = 'bottom'
+            plt.show(self.fig3)
+            # if self.IFS.value:
+            #     plt.show(self.fig3)
+            # else:
+            #     # self.fig3.clf()
+            #     plt.close(self.fig3)
+        display(HBox([self.output,new]))
+
+
+
+    def hide_tab3(self):
+        self.out3.layout.display = 'none'
+        self.output_tabs.children = [self.out1, self.out2]  # Réinitialiser les onglets sans out3
+        self.plot_shown = False  # Reset the plot flag when hiding tab 3    # self.output_tabs.selected_index = 0  # Sélectionner un autre onglet par défaut
+
+    def show_tab3(self):
+        self.out3.layout.display = 'block'
+        self.output_tabs.children = [self.out1, self.out2, self.out3]  # Ajouter out3 à nouveau
+        self.output_tabs.set_title(2, 'IFS Image')
+        if not self.plot_shown:
+            with self.out3:
+                if self.first_plot:
+                    self.fig3.canvas.draw()
+                    self.first_plot = False
+                else:
+                    plt.show(self.fig3)
+                self.plot_shown = True
+
+
+
+    def on_instrument_change(self):
+        # with self.out1:
+        #     print(self.instruments_dict[self.instrument.value]["dispersion"])
+        self.spectro = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
+        self.spectrograph.value = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
+        self.Δλ.layout.visibility = 'hidden' if self.output_tabs.selected_index==1 else 'visible'  
+
+        self.change.value=True
+        selected_index = self.output_tabs.selected_index
+        if selected_index == 0:
+            self.x_axis.layout.visibility = 'visible'  
+            self.SNR_res.layout.visibility = 'visible'  
+            self.xlog.layout.visibility = 'visible'  
+            # self.ylog.layout.visibility = 'visible'  
+            with self.out1:
+                self.Size_source.value-=0.01
+            # if ("FIREBall-2" in self.instrument.value):
+            #     self.spectro_tab.layout.display = 'block'
+            #     self.fb_tab.layout.display = 'block'
+            #     self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab, self.fb_tab]
+            #     self.controls.set_title(5, 'FIREBall specific')
+            # else:
+            if self.spectro:
+                self.spectro_tab.layout.display = 'block'
+                self.fb_tab.layout.display = 'none'
+                self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab]                    
+                self.controls.set_title(4, 'Spectrograph design')
+            else:
+                self.fb_tab.layout.display = 'none'
+                self.spectro_tab.layout.display = 'none'
+                self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab]                    
+        else:
+            self.x_axis.layout.visibility = 'hidden'  
+            self.SNR_res.layout.visibility = 'hidden'  
+            self.xlog.layout.visibility = 'hidden'  
+            # self.ylog.layout.visibility = 'hidden'  
+
+            # if ("FIREBall-2" in self.instrument.value):
+            #     self.spectro_tab.layout.display = 'block'
+            #     self.fb_tab.layout.display = 'block'
+            #     self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab, self.im_tab, self.fb_tab]
+            #     self.controls.set_title(4, 'Spectrograph design')
+            #     self.controls.set_title(5, 'Imaging')
+            #     self.controls.set_title(6, 'FIREBall specific')
+            # else:
+            if self.spectro:
+                self.spectro_tab.layout.display = 'block'
+                self.fb_tab.layout.display = 'none'
+                self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab, self.im_tab]                    
+                self.controls.set_title(4, 'Spectrograph design')
+                self.controls.set_title(5, 'Imaging')
+            else:
+                self.fb_tab.layout.display = 'none'
+                self.spectro_tab.layout.display = 'none'
+                self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.im_tab]                    
+                self.controls.set_title(4, 'Imaging')
+
+            if selected_index == 1:
+                with self.out2:
+                    self.Size_source.value-=0.01
+            elif selected_index == 2:
+                with self.out3:
+                    self.Size_source.value+=0.01
+        
+        return
+    
+
+
+    def update(self,x_axis, counting_mode,Sky,acquisition_time,Signal,EM_gain,RN,CIC_charge,Dark_current,exposure,smearing,temperature,follow_temp,fwhm,QE,extra_background, log,xlog,SNR_res,
+    Collecting_area, pixel_scale, Throughput, Spectral_resolution, SlitDims, dispersion,
+    Size_source,Line_width,wavelength,Δλ,Δx, Atmosphere, pixel_size,cosmic_ray_loss_per_sec,lambda_stack, #change, 
+    spectra,units,Throughput_FWHM, QElambda, atmlambda, fraction_lya,sky_lines, Redshift, IFS, spectrograph,interpolation, source_im,minmax ,test, dependencies
+    ):
+        """
+        Update values in the ETC plot
+        """
+        self.show_tab3() if self.IFS.value else self.hide_tab3()
+
+        with self.out1:
+
+
+
+            # print(counting_mode,Sky,acquisition_time,Signal,EM_gain,RN,CIC_charge,Dark_current,exposure,smearing,temperature,follow_temp,fwhm,QE,extra_background, log,xlog,SNR_res,    Collecting_area, pixel_scale, Throughput, Spectral_resolution, SlitDims, dispersion,    Size_source,Line_width,wavelength,Δλ,Δx, Atmosphere, pixel_size,cosmic_ray_loss_per_sec,lambda_stack, change,     spectra,units,Throughput_FWHM, QElambda, atmlambda, fraction_lya,sky_lines, Redshift, IFS)
+            # self.yscale="symlog" if log else "linear"
+            self.yscale="log" if log else "linear"
+
+            if self.change.value:
+                PSF_RMS_mask=fwhm[0]
+                PSF_RMS_det=fwhm[1]
+                # self.Slitwidth=SlitDims[0]
+                # self.Slitlength=SlitDims[1]
+                Slitwidth=SlitDims[0]
+                Slitlength=SlitDims[1]
+                self.Slitwidth=SlitDims[0]
+                self.Slitlength=SlitDims[1]
+                readout_time=exposure[0]
+                exposure_time=exposure[1]
+                if follow_temp:
+                    self.follow_temp.value=follow_temp
+                    self.Dark_current.value = self.dark_poly(temperature)
+                    self.smearing.value = self.smearing_poly(temperature)
+                    # self.CIC_charge.value = self.CIC_poly(self.temperature.value)
+                if 1==1: # HACK here is just to be able to plot x_axis for fireball. Issue is that when change x_axis options, it comes back to the first choice
+                    if "FIREBall" in self.instrument.value:
+                        options = [x_axis] + self.fb_options if self.follow_temp.value else [x_axis] + self.fb_options_no_temp
+                    else:
+                        options = [x_axis] +  self.other_options if self.spectrograph.value else [x_axis] +  self.other_options_imager
+                    self.x_axis.options = options
+                    if x_axis in options:
+                        self.x_axis.value=x_axis
+                    if  "OBSERVED SOURCE" in self.x_axis.value:
+                        self.x_axis.value, x_axis = "Signal", "Signal"
+                    elif  "OBSERVATION STRATEGY" in self.x_axis.value:
+                        self.x_axis.value, x_axis = "Atmosphere","Atmosphere"
+                    elif  "INSTRUMENT DESIGN" in self.x_axis.value:
+                        self.x_axis.value, x_axis = "Collecting_area","Collecting_area"
+                    elif  "SPECTROGRAPH DESIGN" in self.x_axis.value:
+                        self.x_axis.value, x_axis = "Spectral_resolution","Spectral_resolution"
+                    elif  "DECTECTOR PERFORMANCE" in self.x_axis.value:
+                        self.x_axis.value, x_axis = "exposure_time", "exposure_time"
+                    elif  "AMPLIFIED" in self.x_axis.value:
+                        self.x_axis.value, x_axis = "EM_gain","EM_gain"
+
+
+
+                args, _, _, locals_ = inspect.getargvalues(inspect.currentframe())
+                if x_axis in locals_:
+                    value = locals_[x_axis]
+                else:
+                    value = getattr(self,x_axis)
+                    if (type(value) != float) & (type(value) != int):
+                        value = self.instruments_dict[self.instrument.value][x_axis]
+                    # error here! getattr(self,x_axis) can be 
+
+                names = ["Signal","Dark current","Sky", "CIC", "Read noise","Extra Background"]
+ 
+
+                self.smearing.layout.visibility = 'visible' if ("FIREBall-2" in self.instrument.value) & (self.counting_mode.value)    else 'hidden'
+                self.temperature.layout.visibility = 'visible' if ("FIREBall-2" in self.instrument.value) &  (self.follow_temp.value)  else 'hidden'
+                if self.spectrograph.value:
+                    self.Throughput_FWHM.layout.visibility = 'visible' if ((self.QElambda.value) &  ~(os.path.exists("../data/Instruments/%s/Throughput.csv"%(self.instrument.value.upper().replace(" ","_"))) )      )  else 'hidden'
+                else:
+                    self.Throughput_FWHM.layout.visibility = 'visible'
+
+                if x_axis == 'temperature':
+                    temperature=np.linspace(self.temperature.min, self.temperature.max)
+                    Dark_current = 10**self.dark_poly(temperature)
+                    # smearing = np.poly1d([-0.0306087, -2.2226087])(temperature)
+                    smearing = self.smearing_poly(temperature)
+                # d = {name:np.linspace(rgetattr(self, '%s.min'%(name)), rgetattr(self, '%s.max'%(name))   name for self.fb_options_no_temp}
+
+                self.len_xaxis = 50
+                def space(a, b):
+                    if (self.xlog.value) & (a>=0):
+                        if a==0:
+                            y = np.logspace(np.log10(np.max([a,0.0001])),np.log10(b),self.len_xaxis) 
+                        else:
+                            y = np.logspace(np.log10(a),np.log10(b),self.len_xaxis) 
+    
+                    else:
+                        y = np.linspace(a,b,self.len_xaxis)
+                    return y
+
+                if self.output_tabs.get_state()["selected_index"]==self.output_tabs.children.index(self.out1):  
+
+                    if x_axis == 'exposure_time':
+                        exposure_time=space(1,self.time_max)
+                    elif x_axis == 'Sky':
+                        # Sky=np.logspace(-19,-15)
+                        Sky = space(10**self.Sky.min,10**self.Sky.max)
+                    elif x_axis == 'Signal':
+                        Signal=space(10**self.Signal.min,10**self.Signal.max)
+                    elif x_axis == 'EM_gain':
+                        EM_gain=space(self.EM_gain.min,self.EM_gain.max)
+                    elif x_axis == 'acquisition_time':
+                        acquisition_time=space(self.acquisition_time.min,self.acquisition_time.max)
+                    elif x_axis == 'RN':
+                        RN=space(self.RN.min,self.RN.max)
+                    elif x_axis == 'CIC_charge':
+                        CIC_charge=space(0.001,self.CIC_charge.max)
+                    elif x_axis == 'Dark_current':
+                        Dark_current=space(self.Dark_current.min,self.Dark_current.max)
+                    elif x_axis == 'readout_time':
+                        readout_time=space(self.exposure.min,10*exposure_time)
+                    elif x_axis == 'smearing':
+                        smearing=space(self.smearing.min,self.smearing.max)
+                    elif x_axis == 'Redshift':
+                        Redshift=space(self.Redshift.min,self.Redshift.max)
+                    elif x_axis == 'temperature':
+                        temperature=space(self.temperature.min,self.temperature.max)
+                    elif x_axis == 'QE':
+                        QE=space(self.QE.min,self.QE.max)
+                    elif x_axis == 'PSF_RMS_mask':
+                        PSF_RMS_mask=space(self.fwhm.min,self.fwhm.value[1])
+                    elif x_axis == 'PSF_RMS_det':
+                        PSF_RMS_det=space(self.fwhm.min,self.fwhm.max)
+                    elif x_axis == 'extra_background':
+                        extra_background=space(self.extra_background.min,self.extra_background.max)
+                    elif x_axis == 'Δx':
+                        Δx=space(self.Δx.min,self.Δx.max)#pixels
+                    elif x_axis == 'Δλ':
+                        Δλ=space(self.Δλ.min,self.Δλ.max)#pixels
+                    elif x_axis == 'Throughput':
+                        Throughput=space(self.Throughput.min,self.Throughput.max)
+                    elif x_axis == 'Atmosphere':
+                        Atmosphere=space(self.Atmosphere.min,self.Atmosphere.max)
+                    elif x_axis == 'Line_width':
+                        Line_width=space(self.Line_width.min,self.Line_width.max)
+                    elif x_axis == 'Size_source':
+                        Size_source =  space(self.Size_source.min,self.Size_source.max)
+                    elif x_axis == 'pixel_scale':
+                        pixel_scale = space(self.pixel_scale.min,self.pixel_scale.max)
+                    elif x_axis == 'pixel_size':
+                        pixel_size = space(self.pixel_size.min,self.pixel_size.max)
+                    elif x_axis == 'wavelength':
+                        wavelength =space(self.wavelength.min,self.wavelength.max)
+                    elif x_axis == 'Slitwidth':
+                        Slitwidth =space(self.SlitDims.min,self.SlitDims.max)
+                    elif x_axis == 'Slitlength':
+                        Slitlength =space(self.SlitDims.min,self.SlitDims.max)
+                    elif x_axis == 'Spectral_resolution':
+                        Spectral_resolution = space(self.Spectral_resolution.min,self.Spectral_resolution.max)
+                    elif x_axis == 'dispersion':
+                        dispersion = space(self.dispersion.min,self.dispersion.max)
+                    elif x_axis == 'lambda_stack':
+                        lambda_stack = space(self.dispersion.value,self.Bandwidth)
+                    elif x_axis == 'Collecting_area':
+                        Collecting_area = space(10**self.Collecting_area.min,10**self.Collecting_area.max)
+                    elif x_axis == "cosmic_ray_loss_per_sec":
+                        cosmic_ray_loss_per_sec=space(0,1/exposure[1])
+                    elif x_axis == "cosmic_ray_loss_per_sec":
+                        cosmic_ray_loss_per_sec=space(0,1/exposure[1])
+                    elif x_axis == "Bandwidth":
+                        self.Bandwidth=space(0,10*self.Bandwidth)
+
+
+
+                    # if x_axis == 'exposure_time':
+                    #     dict_val["exposure_time"] = space(1, self.time_max)
+                    # elif x_axis == 'Sky':
+                    #     dict_val["Sky"] = space(10**self.Sky.min, 10**self.Sky.max)
+                    # elif x_axis == 'Signal':
+                    #     dict_val["Signal"] = space(10**self.Signal.min, 10**self.Signal.max)
+                    # elif x_axis == 'EM_gain':
+                    #     dict_val["EM_gain"] = space(self.EM_gain.min, self.EM_gain.max)
+                    # elif x_axis == 'acquisition_time':
+                    #     dict_val["acquisition_time"] = space(self.acquisition_time.min, self.acquisition_time.max)
+                    # elif x_axis == 'RN':
+                    #     dict_val["RN"] = space(self.RN.min, self.RN.max)
+                    # elif x_axis == 'CIC_charge':
+                    #     dict_val["CIC_charge"] = space(0.001, self.CIC_charge.max)
+                    # elif x_axis == 'Dark_current':
+                    #     dict_val["Dark_current"] = space(self.Dark_current.min, self.Dark_current.max)
+                    # elif x_axis == 'readout_time':
+                    #     dict_val["readout_time"] = space(self.exposure.min, 10 * dict_val.get("exposure_time", 1))  # fallback si non défini
+                    # elif x_axis == 'smearing':
+                    #     dict_val["smearing"] = space(self.smearing.min, self.smearing.max)
+                    # elif x_axis == 'Redshift':
+                    #     dict_val["Redshift"] = space(self.Redshift.min, self.Redshift.max)
+                    # elif x_axis == 'temperature':
+                    #     dict_val["temperature"] = space(self.temperature.min, self.temperature.max)
+                    # elif x_axis == 'QE':
+                    #     dict_val["QE"] = space(self.QE.min, self.QE.max)
+                    # elif x_axis == 'PSF_RMS_mask':
+                    #     dict_val["PSF_RMS_mask"] = space(self.fwhm.min, self.fwhm.value[1])
+                    # elif x_axis == 'PSF_RMS_det':
+                    #     dict_val["PSF_RMS_det"] = space(self.fwhm.min, self.fwhm.max)
+                    # elif x_axis == 'extra_background':
+                    #     dict_val["extra_background"] = space(self.extra_background.min, self.extra_background.max)
+                    # elif x_axis == 'Δx':
+                    #     dict_val["Δx"] = space(self.Δx.min, self.Δx.max)
+                    # elif x_axis == 'Δλ':
+                    #     dict_val["Δλ"] = space(self.Δλ.min, self.Δλ.max)
+                    # elif x_axis == 'Throughput':
+                    #     dict_val["Throughput"] = space(self.Throughput.min, self.Throughput.max)
+                    # elif x_axis == 'Atmosphere':
+                    #     dict_val["Atmosphere"] = space(self.Atmosphere.min, self.Atmosphere.max)
+                    # elif x_axis == 'Line_width':
+                    #     dict_val["Line_width"] = space(self.Line_width.min, self.Line_width.max)
+                    # elif x_axis == 'Size_source':
+                    #     dict_val["Size_source"] = space(self.Size_source.min, self.Size_source.max)
+                    # elif x_axis == 'pixel_scale':
+                    #     dict_val["pixel_scale"] = space(self.pixel_scale.min, self.pixel_scale.max)
+                    # elif x_axis == 'pixel_size':
+                    #     dict_val["pixel_size"] = space(self.pixel_size.min, self.pixel_size.max)
+                    # elif x_axis == 'wavelength':
+                    #     dict_val["wavelength"] = space(self.wavelength.min, self.wavelength.max)
+                    # elif x_axis == 'Slitwidth':
+                    #     dict_val["Slitwidth"] = space(self.SlitDims.min, self.SlitDims.max)
+                    # elif x_axis == 'Slitlength':
+                    #     dict_val["Slitlength"] = space(self.SlitDims.min, self.SlitDims.max)
+                    # elif x_axis == 'Spectral_resolution':
+                    #     dict_val["Spectral_resolution"] = space(self.Spectral_resolution.min, self.Spectral_resolution.max)
+                    # elif x_axis == 'dispersion':
+                    #     dict_val["dispersion"] = space(self.dispersion.min, self.dispersion.max)
+                    # elif x_axis == 'lambda_stack':
+                    #     dict_val["lambda_stack"] = space(self.dispersion.value, self.Bandwidth)
+                    # elif x_axis == 'Collecting_area':
+                    #     dict_val["Collecting_area"] = space(10**self.Collecting_area.min, 10**self.Collecting_area.max)
+                    # elif x_axis == "cosmic_ray_loss_per_sec":
+                    #     dict_val["cosmic_ray_loss_per_sec"] = space(0, 1 / dict_val.get("exposure_time", 1))
+                    # elif x_axis == "Bandwidth":
+                    #     self.Bandwidth = space(0, 10 * self.Bandwidth)
+                    #     dict_val["Bandwidth"] = self.Bandwidth
+
+
+                dict_val = {
+                    "exposure_time": exposure[1],
+                    "Sky": Sky,
+                    "Signal": Signal,
+                    "EM_gain": EM_gain,
+                    "acquisition_time": acquisition_time,
+                    "RN": RN,
+                    "CIC_charge": CIC_charge,
+                    "Dark_current": Dark_current,
+                    "readout_time": exposure[0],
+                    "smearing": smearing,
+                    "Redshift": Redshift,
+                    "temperature": temperature,
+                    "QE": QE,
+                    "PSF_RMS_mask": fwhm[0],
+                    "PSF_RMS_det": fwhm[1],
+                    "extra_background": extra_background,
+                    "Δx": Δx,
+                    "Δλ": Δλ,
+                    "Throughput": Throughput,
+                    "Atmosphere": Atmosphere,
+                    "Line_width": Line_width,
+                    "Size_source": Size_source,
+                    "pixel_scale": pixel_scale,
+                    "pixel_size": pixel_size,
+                    "wavelength": wavelength,
+                    "Slitwidth": SlitDims[0],
+                    "Slitlength": SlitDims[1],
+                    "Spectral_resolution": Spectral_resolution,
+                    "dispersion": dispersion,
+                    "lambda_stack": lambda_stack,
+                    "Collecting_area": Collecting_area,
+                    "cosmic_ray_loss_per_sec": cosmic_ray_loss_per_sec,
+                    "Bandwidth": self.Bandwidth,
+                }
+
+                for vname in ["CIC_charge", "dispersion", "pixel_scale"]:
+                    if vname not in [ d.split('=')[0].strip() for d in dependencies]:
+                        rsetattr(self, '%s.layout.visibility'%(vname), 'visible'  )  
+                if len(dependencies)>0: #TODO besure that we remnove it when one is seleted but not the others 
+
+                    for dep in dependencies:
+                        exec(dep, dict_val)
+                        var_name = dep.split('=')[0].strip()
+                        if var_name == "CIC_charge":
+                            CIC_charge = dict_val[var_name]
+                            rsetattr(self, '%s.layout.visibility'%(var_name), 'hidden'  ) 
+                        if var_name == "dispersion":
+                            dispersion = dict_val[var_name]
+                            rsetattr(self, '%s.layout.visibility'%(var_name), 'hidden'  )  
+                        if var_name == "pixel_scale":
+                            pixel_scale = dict_val[var_name]
+                            rsetattr(self, '%s.layout.visibility'%(var_name), 'hidden'  )  
+
+                        # print(EM_gain, CIC_charge)              
+                # else:
+                #     rsetattr(self, '%s.layout.visibility'%("CIC_charge"), 'visible'  )                
+                #     rsetattr(self, '%s.layout.visibility'%("dispersion"), 'visible'  )                
+                #     rsetattr(self, '%s.layout.visibility'%("pixel_scale"), 'visible'  )                
+
+                        
+
+                
+
+                args, _, _, locals_ = inspect.getargvalues(inspect.currentframe())
+                try:
+                    new_value = locals_[x_axis]
+                except KeyError:
+                    new_value = getattr(self,x_axis)
+                arg = np.argmin(abs(new_value - value))
+                self.new = Observation(instruments=self.instruments, instrument=self.instrument.value,  Throughput_FWHM=Throughput_FWHM, Redshift=Redshift, exposure_time=exposure_time,Sky=Sky, acquisition_time=acquisition_time,counting_mode=counting_mode,Signal=Signal,EM_gain=EM_gain,RN=RN,CIC_charge=CIC_charge,Dark_current=Dark_current,readout_time=readout_time,smearing=smearing,extra_background=extra_background,i=arg,PSF_RMS_mask=PSF_RMS_mask,PSF_RMS_det=PSF_RMS_det,QE=QE,cosmic_ray_loss_per_sec=cosmic_ray_loss_per_sec, Throughput=Throughput, Atmosphere=Atmosphere,lambda_stack=lambda_stack,Slitwidth=Slitwidth, Bandwidth=self.Bandwidth,Size_source=Size_source,Collecting_area=Collecting_area,Δx=Δx,Δλ=Δλ,
+                pixel_scale=pixel_scale, Spectral_resolution=Spectral_resolution,  dispersion=dispersion,Line_width=Line_width,wavelength=wavelength,  pixel_size=pixel_size,len_xaxis=self.len_xaxis, Slitlength=Slitlength,IFS=IFS,SNR_res=SNR_res,spectrograph=spectrograph,test=test)
+                # self.new = Observation(
+                #     instruments=self.instruments,
+                #     instrument=self.instrument.value,
+                #     Throughput_FWHM=Throughput_FWHM,
+                #     Redshift=dict_val["Redshift"],
+                #     exposure_time=dict_val["exposure_time"],
+                #     Sky=dict_val["Sky"],
+                #     acquisition_time=dict_val["acquisition_time"],
+                #     counting_mode=counting_mode,
+                #     Signal=dict_val["Signal"],
+                #     EM_gain=dict_val["EM_gain"],
+                #     RN=dict_val["RN"],
+                #     CIC_charge=dict_val["CIC_charge"],
+                #     Dark_current=dict_val["Dark_current"],
+                #     readout_time=dict_val["readout_time"],
+                #     smearing=dict_val["smearing"],
+                #     extra_background=dict_val["extra_background"],
+                #     i=arg,
+                #     PSF_RMS_mask=dict_val["PSF_RMS_mask"],
+                #     PSF_RMS_det=dict_val["PSF_RMS_det"],
+                #     QE=dict_val["QE"],
+                #     cosmic_ray_loss_per_sec=dict_val["cosmic_ray_loss_per_sec"],
+                #     Throughput=dict_val["Throughput"],
+                #     Atmosphere=dict_val["Atmosphere"],
+                #     lambda_stack=dict_val["lambda_stack"],
+                #     Slitwidth=dict_val["Slitwidth"],
+                #     Bandwidth=dict_val["Bandwidth"],
+                #     Size_source=dict_val["Size_source"],
+                #     Collecting_area=dict_val["Collecting_area"],
+                #     Δx=dict_val["Δx"],
+                #     Δλ=dict_val["Δλ"],
+                #     pixel_scale=dict_val["pixel_scale"],
+                #     Spectral_resolution=dict_val["Spectral_resolution"],
+                #     dispersion=dict_val["dispersion"],
+                #     Line_width=dict_val["Line_width"],
+                #     wavelength=dict_val["wavelength"],
+                #     pixel_size=dict_val["pixel_size"],
+                #     len_xaxis=self.len_xaxis,
+                #     Slitlength=dict_val["Slitlength"],
+                #     IFS=IFS,
+                #     SNR_res=SNR_res,
+                #     spectrograph=spectrograph,
+                #     test=test
+                # )
+                self.colors=self.new.colors
+
+                
+                if self.output_tabs.get_state()["selected_index"]==self.output_tabs.children.index(self.out1): 
+                    ft=8
+                    
+                    try:
+                        arg = np.argmin(abs(getattr(self.new,x_axis) - value))
+                    except AttributeError:
+                        arg= np.argmin(temperature - value)
+                    try:
+                        label = '%s [Best]=%s [%s]\nSNR [Best]=%0.2f, SNR=%0.2f'%(self.x_axis.value,float_to_latex(value),float_to_latex(new_value[np.nanargmax(self.new.SNR)]),self.new.SNR[arg],np.nanmax(self.new.SNR))
+                    except (TypeError,ValueError) as e:
+                        if ("FIREBall" in self.instrument.value) & (self.counting_mode.value):
+                            label = '%s [Best]=%s [%s]\nSNR [Best]=%0.2f, SNR=%0.2f\nT=%0.1f sigma\nSignal kept=%i%%, RN kept=%i%%'%(self.x_axis.value,float_to_latex(value),float_to_latex(new_value[np.nanargmax(self.new.SNR)]),self.new.SNR[arg],np.nanmax(self.new.SNR),self.new.n_threshold[arg], 100*self.new.Photon_fraction_kept[arg], 100*self.new.RN_fraction_kept[arg])#, self.new.gain_thresholding[arg])
+                        else:
+                            label = '%s [Best]=%s [%s]\nSNR [Best]=%0.2f, SNR=%0.2f'%(self.x_axis.value,float_to_latex(value),float_to_latex(new_value[np.nanargmax(self.new.SNR)]),self.new.SNR[arg],np.nanmax(self.new.SNR))#, self.new.gain_thresholding[arg])
+
+                    max_,min_=[],[]
+
+                    for i,name in enumerate(self.new.names): 
+                        self.ax0.lines[i].set_xdata(new_value)
+                        self.ax0.lines[i].set_ydata(self.new.noises_per_exp[:,i] )
+                        if self.new.percents[i,self.new.i] ==np.max(self.new.percents[:,self.new.i]):
+                            self.ax0.lines[i].set_label(r"$\bf{➛%s}$: %0.2f (%0.1f%%)"%(name,self.new.noises_per_exp[self.new.i,i],self.new.percents[i,self.new.i]))
+                        else:
+                            self.ax0.lines[i].set_label('%s: %0.2f (%0.1f%%)'%(name,self.new.noises_per_exp[self.new.i,i],self.new.percents[i,self.new.i]))
+                        max_.append(np.nanmax(self.new.noises_per_exp[:,i]))
+                        min_.append(np.nanmin(self.new.noises_per_exp[:,i]))
+                    self.ax0.lines[i+1].set_xdata(new_value)
+                    self.ax0.lines[i+1].set_ydata(   np.sqrt(np.nansum(np.multiply(self.new.noises_per_exp[:,:-1],self.new.noises_per_exp[:,:-1]),axis=1))   )
+
+
+                    
+                    self.ax0.lines[i+1].set_label('%s: %0.2f'%("Quadratic sum",np.sqrt(np.nansum(np.multiply(self.new.noises_per_exp[self.new.i,:-1],self.new.noises_per_exp[self.new.i,:-1])))   ))     
+                    self.ax0.legend(loc='upper left', fontsize=ft,title_fontsize=ft )
+                    if x_axis in ["exposure_time","readout_time","PSF_RMS_mask","PSF_RMS_det","Slitwidth","Slitlength"]:
+                        self.ax3.set_xlabel(x_axis.replace("_"," "))
+                    else:
+                        try:
+                            self.ax3.set_xlabel(rgetattr(self, '%s.description_tooltip'%(x_axis)) )
+                        except AttributeError:
+                            self.ax3.set_xlabel(x_axis + "  [%s]"%(self.instruments["Unit"][self.instruments["Charact."]==x_axis][0]))
+
+                    self.ax3.lines[0].set_data(new_value,  np.log10(self.new.SB_lim_per_pix))
+                    self.ax3.lines[1].set_data(new_value,  np.log10(self.new.SB_lim_per_res))
+                    self.ax3.lines[2].set_data(new_value,  np.log10(self.new.SB_lim_per_source))
+
+                    self.ax3.lines[0].set_label("SNR=5 limiting SB/power per pixel (%0.2fergs/s~%0.1ELU)"%(np.log10(1.30e57*self.new.SB_lim_per_pix[self.new.i]),   convert_ergs2LU(self.new.SB_lim_per_pix[self.new.i],self.wavelength.value)   ))
+                    self.ax3.lines[1].set_label("SNR=5 limiting SB/power per elem resolution (%0.2fergs/s~%0.1ELU)"%(np.log10(1.30e57*self.new.SB_lim_per_res[self.new.i]),   convert_ergs2LU(self.new.SB_lim_per_res[self.new.i],self.wavelength.value)   ))
+                    self.ax3.lines[2].set_label("SNR=5 limiting SB/power per source (%0.2fergs/s~%0.1ELU)"%(np.log10(1.30e57*self.new.SB_lim_per_source[self.new.i]),   convert_ergs2LU(self.new.SB_lim_per_source[self.new.i],self.wavelength.value)   ))
+                    self.ax3.set_ylim(np.nanmin([np.nanmin(np.log10(0.1*self.new.SB_lim_per_source)),np.nanmin(0.1*np.log10(self.new.SB_lim_per_res))]),np.nanmax(np.log10(self.new.SB_lim_per_pix[np.isfinite(self.new.SB_lim_per_pix)])))
+
+
+                    for v in self.v:
+                        v.set_xdata([value,value])
+                    self.v[-2].set_label(label)
+
+
+                    for artist in self.ax2.collections+self.ax1.collections:
+                        artist.remove()
+
+                    self.stackplot2 = self.ax2.stackplot(new_value,self.new.SNR * np.array(self.new.noises).T[:-1,:]**2/self.new.Total_noise_final**2,alpha=0.7,colors=self.colors)
+                    # self.stackplot2 = ax3.stackplot(getattr(self,x), self.SNR * np.array(self.noises).T[:-1,:]**2/self.Total_noise_final**2,alpha=0.7,colors=self.colors)
+      
+                                
+                    self.ax0.set_ylabel('Noise (e-/%s/exp)'%(SNR_res.split(" ")[1]))     
+                    self.ax1.set_ylabel('Contrib (e-/%s/exp)'%(SNR_res.split(" ")[1]))     
+                    self.ax2.set_ylabel('SNR (%s, N frames)'%(SNR_res.split(" ")[1]))     
+
+
+                    # labels =  ['%s: %0.3f (%0.1f%%)'%(name,getattr(self.new,"electrons_per_pix")[self.new.i,j],100*getattr(self.new,"electrons_per_pix")[self.new.i,j]/np.sum(getattr(self.new,'electrons_per_pix')[self.new.i,:])) for j,name in enumerate(self.new.names)]
+                    if (type(self.new.number_pixels_used)==np.float64) | (type(self.new.number_pixels_used) is int)| (type(self.new.number_pixels_used) is float): 
+                        self.number_pixels_used = self.new.number_pixels_used
+                    else:
+                        self.number_pixels_used = self.new.number_pixels_used[arg]
+                    contributions = self.number_pixels_used * getattr(self.new, "electrons_per_pix")[self.new.i, :]
+
+                    percentages = 100 * contributions / np.sum(contributions)
+                    # Find the index of the maximum contribution
+                    max_index = np.argmax(percentages)
+                    # Generate the labels, making the largest contribution bold
+                    labels = [
+                        r'%s: %0.3f (%0.1f%%)' % (name, contributions[j], percentages[j])
+                        if j != max_index
+                        else r"➛$\mathbf{%s}$: %0.3f (%0.1f%%)" % (name, contributions[j], percentages[j])
+                        for j, name in enumerate(self.new.names)
+                    ]                    
+                    self.stackplot1 = self.ax1.stackplot(new_value, self.number_pixels_used * np.array(self.new.electrons_per_pix).T,alpha=0.7,colors=self.colors,labels=labels)
+
+                    self.ax1.legend(loc='upper left',title="Overall background: %0.3f (%0.1f%%)"%(np.nansum(self.number_pixels_used *self.new.electrons_per_pix[self.new.i,1:]),100*np.nansum(self.number_pixels_used * self.new.electrons_per_pix[self.new.i,1:])/np.nansum(self.number_pixels_used * self.new.electrons_per_pix[self.new.i,:])),fontsize=ft,title_fontsize=ft)
+                    self.ax2.legend(loc='upper right', fontsize=ft,title_fontsize=ft )
+                    self.ax3.legend(loc='upper right',title=r"$\mathbf{Left}$: Ext. Source surface brightness, $\mathbf{Right}$: Point source power", fontsize=ft,title_fontsize=ft )
+                    self.ax2.set_xlim((np.max([np.min(new_value),1e-6]),np.max(new_value)))
+                    self.ax2.set_xlim((np.min(new_value),np.max(new_value)))
+
+
+                    self.ax0.set_yscale(self.yscale)
+                    self.ax1.set_yscale(self.yscale)
+                    self.ax2.set_yscale(self.yscale)
+                    if log:
+                        # self.ax0.set_ylim(ymin=np.nanmin(self.new.noises[:,:-1]/self.new.factor[:,None]),ymax=np.nanmax(np.nansum(self.new.noises[:,:-1],axis=1)/self.new.factor))
+                        self.ax0.set_ylim(ymin=0,ymax=   np.nanmax(  np.sqrt(np.nansum(np.multiply(self.new.noises_per_exp[:,:-1],self.new.noises_per_exp[:,:-1]),axis=1))  )   )
+                        self.ax1.set_ylim(ymin=np.nanmin(self.number_pixels_used * np.array(self.new.electrons_per_pix[:,0])),ymax=np.max(self.number_pixels_used *np.sum(getattr(self.new,'electrons_per_pix'),axis=1)))
+                        self.ax2.set_ylim(ymin=np.nanmin(np.array( self.new.SNR * np.array(self.new.noises).T[:-1,:]**2/self.new.Total_noise_final**2)[:,0]),ymax=np.nanmax(getattr(self.new,'SNR')))
+
+                        # if SNR:
+                        # else:
+                        #     self.ax2.set_ylim(ymin=np.nanmin(np.array( self.new.snrs_per_pixel * np.array(self.new.noises).T[:-1,:]**2/self.new.Total_noise_final**2)[:,0]),ymax=np.nanmax(getattr(self.new,'snrs_per_pixel')))
+
+                    else:
+                        self.ax0.set_ylim((-0.1,np.nanmax(  np.sqrt(np.nansum(np.multiply(self.new.noises_per_exp[:,:-1],self.new.noises_per_exp[:,:-1]),axis=1))  )   ))
+                        self.ax1.set_ylim((0,  self.number_pixels_used *  np.max(np.sum(getattr(self.new,'electrons_per_pix'),axis=1))))
+                        self.ax2.set_ylim((0,np.nanmax(self.new.SNR)))
+                        # if SNR:
+                        #     self.ax2.set_ylim((0,np.nanmax(self.new.SNR)))
+                        # else:
+                        #     self.ax2.set_ylim((0,np.nanmax(self.new.snrs_per_pixel)))
+
+                    
+                    if xlog:
+                        try:
+                            if (np.nanmin(new_value)<=0) & (np.nanmin(new_value)  < value < np.nanmax(new_value)  ):
+                            # if (rgetattr(self,"%s.min"%(self.x_axis.value))<=0) & ( rgetattr(self,"%s.min"%(self.x_axis.value))  <  rgetattr(self,"%s.value"%(self.x_axis.value)) <  rgetattr(self,"%s.max"%(self.x_axis.value))):
+                                self.ax0.set_xscale("symlog")  
+                            else:
+                                self.ax0.set_xscale("log")
+                        except AttributeError:
+                            self.ax0.set_xscale("log")
+
+                    else:
+                        self.ax0.set_xscale("linear")
+                    #TODO add that if dispersion is an array we must 
+                    disp = dispersion[arg] if type(dispersion)==np.ndarray else dispersion
+
+                    title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i '%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value, 100*100*self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  pixel_scale, 2.35*self.PSF_RMS_det/pixel_scale, 10*self.wavelength.value/self.Spectral_resolution.value/disp, self.number_pixels_used    )
+                    # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$'%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0])
+                    self.ax0.set_title(title,y=0.97,fontsize=10)
+
+                    self.fig.canvas.draw()
+                    # self.fig2.canvas.draw()
+
+                else:
+
+
+                    if self.spectrograph.value:
+                        self.Redshift.disabled = False if "Rest-frame" in self.spectra.value else True
+                    else:
+                        self.Redshift.disabled = True if "Gaussian" in self.spectra.value else False
+                    
+                    self.Size_source.disabled = True if "cube" in self.spectra.value.lower() else False
+                    self.Line_width.disabled = False if "baseline" in self.spectra.value.lower() else True
+
+                    # if ("CIV" in spectra)| ("CIII" in spectra)| ("OVI" in spectra)| ("Lyα" in spectra):
+                    #     self.Redshift.value =   wavelength*10 /float(re.search(r'\d+', spectra).group()) -1
+                    if "Spectra mNUV=" in x_axis:
+                        Signal = float(spectra.split("=")[-1])
+                        Size_source = 0.1
+                        self.fraction_lya.layout.visibility = 'visible'
+                    else: 
+                        Signal = 20
+                        Size_source = 4
+                        self.fraction_lya.layout.visibility = 'hidden'
+                    Sky = (self.new.Sky/exposure_time)#[arg]
+                    flux = (self.new.Signal_el/exposure_time)#[arg]
+                    IFS = True if self.output_tabs.get_state()["selected_index"]==2 else False
+                    # try:
+                        # self.im,self.im_stack, self.cube_stack, self.im0, source_im_wo_atm, self.imaADU_stack_only_source, self.imaADU_without_source, self.imaADU_stack_without_source, self.imaADU_source = self.new.SimulateFIREBallemCCDImage(Bias="Auto",  p_sCIC=0,  SmearExpDecrement=50000,  source=spectra,size=[n1, n2], OSregions=[0, max(n2,n1)], name="Auto", spectra="-", cube="-", n_registers=604, save=False, field="targets_F2.csv",QElambda=QElambda,atmlambda=atmlambda,fraction_lya= fraction_lya, Full_well=self.Full_well, conversion_gain=self.conversion_gain, Altitude=self.Altitude,Throughput_FWHM=self.Throughput_FWHM.value,sky_lines=self.sky_lines.value, Redshift=self.Redshift.value,IFS=IFS)
+                    self.im,self.im_stack = self.new.SimulateFIREBallemCCDImage(Bias="Auto",  p_sCIC=0,  SmearExpDecrement=50000,  source=spectra,size=[n1, n2], OSregions=[0, max(n2,n1)], name="Auto", spectra="-", cube="-", n_registers=604, save=False, field="targets_F2.csv",QElambda=QElambda,atmlambda=atmlambda,fraction_lya= fraction_lya, Full_well=self.Full_well, conversion_gain=self.conversion_gain, Altitude=self.Altitude,Throughput_FWHM=self.Throughput_FWHM.value,sky_lines=self.sky_lines.value, Redshift=self.Redshift.value,IFS=IFS,source_image=self.source_im.value)
+                    self.cube_detector, self.cube_detector_stack = self.im,self.im_stack
+                    # except ValueError as e:
+                        # self.cube_detector, self.cube_detector_stack = self.new.SimulateFIREBallemCCDImage(Bias="Auto",  p_sCIC=0,  SmearExpDecrement=50000,  source=spectra,size=[n1, n2], OSregions=[0, max(n2,n1)], name="Auto", spectra="-", cube="-", n_registers=604, save=False, field="targets_F2.csv",QElambda=QElambda,atmlambda=atmlambda,fraction_lya= fraction_lya, Full_well=self.Full_well, conversion_gain=self.conversion_gain, Altitude=self.Altitude,Throughput_FWHM=self.Throughput_FWHM.value,sky_lines=self.sky_lines.value, Redshift=self.Redshift.value,IFS=IFS,source_image=self.source_im.value)
+
+
+                    self.bins=np.linspace(np.nanmin(self.im),np.nanmax(self.im),100)
+
+                    self.current_cmap.set_bad('red',1.)
+                    gain_unit = 1 if self.counting_mode else EM_gain
+                    if units=="ADU/frame": #ADU/frame: ok basic
+                        factor=1
+                    elif units=="e-/frame": #e-/frame: divide by conversion gain and amplification gain
+                        factor=1/self.conversion_gain/gain_unit
+                    elif units=="photons/frame": #photons/frame: account for QE
+                        factor=1/self.conversion_gain/gain_unit/QE
+                    elif units=="e-/hour": #e-/hour: divide by exptime
+                        factor=3600/self.conversion_gain/gain_unit/exposure_time
+                    elif units=="photons/hour": #photons/hour: divide by exptime, account for QE
+                        factor=3600/self.conversion_gain/gain_unit/QE/exposure_time
+                    elif units=="e-/second": #e-/hour: divide by exptime
+                        factor=self.conversion_gain/gain_unit/exposure_time
+                    elif units=="photons/second": #photons/hour: divide by exptime, account for QE
+                        factor=self.conversion_gain/gain_unit/QE/exposure_time
+
+                if self.source_im.value == "Sim image":
+                    t1, t2 = 'Single image', 'Stacked image'
+                    t12, t22 = 'Single cube', 'Stacked cube'
+                elif self.source_im.value == "Source":
+                    t1, t2 = r'$F_S$  (e-/pix/exp)', r'$F_S$ (e-/pix/exp)'
+                    t12, t22 = r'$F_S$ (erg/s/cm²/arcsec²/Å)', r'$F_S$ (e-/pix/exp)'
+                elif self.source_im.value == "Convolved source":
+                    t1, t2 =  r'$F_S$ (e-/pix/exp)', r'$F_S$ (e-/pix/exp)'
+                    t12, t22 =  r'$F_S$ (e-/pix/exp)', r'$F_S$ (e-/pix/exp)'
+                elif self.source_im.value == "SNR":
+                    t1, t2 = 'SNR (single)', 'SNR (stack)'
+                    t12, t22 = 'SNR (single)', 'SNR (stack)'                
+                self.f = lambda x: wavelength + (dispersion/10) * (x - n1/2) #if spectro else lambda x:x
+                self.g = lambda x: (x - wavelength) / (dispersion/10) + n1/2 #if spectro else lambda x:x
+                self.vmin, self.vmax = self.minmax.value
+                if self.output_tabs.get_state()["selected_index"]==self.output_tabs.children.index(self.out2): 
+                    with self.out2:
+                        self.nax1_secondary.remove()
+                        self.nax1_secondary = self.nax1.secondary_xaxis("top", functions=(self.f,self.g)) if self.spectrograph.value else self.nax1.secondary_xaxis("top", functions=(lambda x: x, lambda x: x))
+                        if self.spectrograph.value:
+                            self.slit_text.txt.set_text("Slit=%0.1f'' × %0.1f''\n    = %0.2f × %0.2fkpc$^2$"%(self.Slitwidth,self.Slitlength,self.Slitwidth/cosmo.arcsec_per_kpc_proper(Redshift+0.001).value,self.Slitlength/cosmo.arcsec_per_kpc_proper(Redshift+0.001).value))
+                            self.nax1.set_title('Wavelength (nm) - R = %i (λ/dλ) = %0.1fÅ = %0.1f km/s'%(Spectral_resolution, 10*wavelength/Spectral_resolution,299792.458/Spectral_resolution),fontsize=10)
+                        else:
+                            self.slit_text.txt.set_text("")
+                            self.nax1.set_title('',fontsize=10)#Wavelength (nm) - R = %i (λ/dλ) = %0.1fÅ = %0.1f km/s'%(Spectral_resolution, 10*wavelength/Spectral_resolution,299792.458/Spectral_resolution))
+                        if (spectra =="Observed-frame: Baseline Spectra") & self.spectrograph.value:
+                            self.l2_s[0].set_label("Stack. spectral prof \nFWHM$_v$ = %0.1f km/s"%(Line_width * 299792.458/(10*wavelength )))
+                        else:
+                            self.l2_s[0].set_label("Stack. spectral prof")
+
+                        self.nan_if_imager = 1 if self.spectrograph.value else np.nan
+                        self.absorption[0].set_ydata(  self.Atmosphere.value*   self.new.atm_trans*np.ones(n1))             
+                        self.emission_lines[0].set_ydata(  (self.new.final_sky*np.ones(n1)   - np.min(self.new.final_sky)) / np.ptp(self.new.final_sky*np.ones(n1)   - np.min(self.new.final_sky))) 
+                        self.Throughput_curve[0].set_ydata(  self.new.Throughput_curve*np.ones(n1)  )#  / np.max(self.new.Throughput_curve))   #
+                        self.nax2_1_secondary.remove()
+                        self.nax2_1_secondary = self.nax2_1.secondary_xaxis("top", functions=(self.f,self.g)) 
+                        self.nax2_1.set_yscale(self.yscale)
+                        norm = "linear" if log==False else SymLogNorm(linthresh=1*factor) #
+                                
+                        self.mod = mostFrequent(self.im_stack[:20,:].flatten())
+                        # self.limit = self.mod+threshold*RN
+                        self.limit = self.mod+self.new.n_threshold * RN
+
+                        if log==False:
+                            im = self.nax.imshow(self.im*factor, aspect="auto",cmap=self.current_cmap,interpolation=interpolation ,vmin=np.nanmin(self.im*factor) + self.vmin*np.ptp(self.im*factor),vmax= np.nanmax(self.im*factor)-  (1-self.vmax)*np.ptp(self.im*factor))
+                            im0 = self.nax0.imshow(self.im_stack*factor, aspect="auto",cmap=self.current_cmap,interpolation=interpolation ,vmin=np.nanmin(self.im_stack*factor) + self.vmin*np.ptp(self.im_stack*factor),vmax=np.nanmax(self.im_stack*factor)-  (1-self.vmax)*np.ptp(self.im_stack*factor))
+                        else:
+                            im = self.nax.imshow(self.im*factor, aspect="auto",cmap=self.current_cmap,interpolation=interpolation ,norm=SymLogNorm(linthresh=1*factor,vmin=np.nanmin(self.im*factor) + self.vmin*np.ptp(self.im*factor),vmax= np.nanmax(self.im*factor)-  (1-self.vmax)*np.ptp(self.im*factor)))
+                            im0 = self.nax0.imshow(self.im_stack*factor, aspect="auto",cmap=self.current_cmap,interpolation=interpolation,norm=SymLogNorm(linthresh=1*factor ,vmin=np.nanmin(self.im_stack*factor) + self.vmin*np.ptp(self.im_stack*factor),vmax=np.nanmax(self.im_stack*factor)-  (1-self.vmax)*np.ptp(self.im_stack*factor)))
+
+                        self.cbar1 = self.fig2.colorbar(im, cax=self.cax, orientation='horizontal')
+                        self.cbar2 = self.fig2.colorbar(im0, cax=self.cax0, orientation='horizontal')
+                        if log==False:
+                            self.cbar1.formatter.set_powerlimits((0, 0))
+                            self.cbar2.formatter.set_powerlimits((0, 0))
+                            self.cbar1.formatter.set_useMathText(True)
+                            self.cbar2.formatter.set_useMathText(True)
+                        # else:
+                        #     self.cbar1.set_yscale('log')
+                        #     self.cbar2.set_yscale('log')
+
+                        labels =  ['%s: %0.3f (%0.1f%%)'%(name,getattr(self.new,"electrons_per_pix")[self.new.i,j],100*getattr(self.new,"electrons_per_pix")[self.new.i,j]/np.sum(getattr(self.new,'electrons_per_pix')[self.new.i,:])) for j,name in enumerate(self.new.names)]
+
+                        stacked_profile = np.nanmean(im0.get_array().data[:,int(n1/2 - Line_width/dispersion/2):int(n1/2 + Line_width/dispersion/2)],axis=1)
+                        spatial_profile = np.nanmean(im.get_array().data[:,int(n1/2 - Line_width/dispersion/2):int(n1/2 + Line_width/dispersion/2)],axis=1)
+                        self.nax1.set_yscale(self.yscale)
+                        self.nax1.lines[0].set_ydata(spatial_profile)
+                        self.nax1.lines[1].set_ydata(np.nanmean(im.get_array().data[int(n2/2 - Size_source/pixel_scale/2):int(n2/2 + Size_source/pixel_scale/2),:],axis=0)) 
+                        self.nax.lines[0].set_label("  \n".join(labels)) 
+                        self.nax.legend(loc="upper left",handlelength=0, handletextpad=0, fancybox=True,markerscale=0,fontsize=8)
+                
+                        try:
+                            self.popt, self.pcov = curve_fit(gaus,np.arange(len(stacked_profile)),stacked_profile,p0=[np.ptp(stacked_profile), 50, 5, stacked_profile.min()])
+                        except (RuntimeError, ValueError) as e:
+                            self.popt = [0,0,0,0]
+
+                        self.noise_res_element = self.im_stack[int(n2/2 - Size_source/pixel_scale/2/2.35):int(n2/2 + Size_source/pixel_scale/2/2.35),int(n1/2 - Line_width/dispersion/2/2.35):int(n1/2 + Line_width/dispersion/2/2.35)].std()/np.sqrt(self.new.number_pixels_used)
+                        self.measured_SNR = self.popt[0]**2 / self.noise_res_element
+                        
+                        self.Flux_ADU =  np.sum(gaus( np.arange(len(stacked_profile)),*self.popt)-self.popt[-1])/factor 
+                        # self.Flux_ADU_counting =  np.sum(-np.log(1-( self.fit["function"]( np.arange(len(stacked_profile)),*self.fit["popt"])-self.fit["popt"][-1] )/(np.exp(-threshold*RN/EM_gain))))
+                        self.e_s_pix = self.Flux_ADU * self.new.dispersion / exposure_time / self.new.N_images_true/self.conversion_gain  if counting_mode else  self.Flux_ADU * self.new.dispersion / EM_gain / exposure_time/self.conversion_gain
+                        self.flux = self.e_s_pix / self.new.Throughput/ self.new.Atmosphere / QE / self.new.Collecting_area
+                        photon_energy_erg = 9.93e-12
+                        self.mag = -2.5*np.log10(self.flux*photon_energy_erg/(2.06*1E-16))+20.08
+                        # Power 2 in SNR as it is in the definition of the gaussian fit.
+                        # TODO we do no account for the poisson noise of the source, neither the fact that we use one resolution element
+
+
+
+                        self.l1_s[0].set_ydata(stacked_profile) 
+                        self.l2_s[0].set_ydata(np.nanmean(im0.get_array().data[int(n2/2 - Size_source/pixel_scale/2):int(n2/2 + Size_source/pixel_scale/2),:],axis=0))
+                        self.l3_s[0].set_ydata(gaus( np.arange(len(stacked_profile)),*self.popt))
+                        if self.spectrograph.value:
+                            self.l3_s[0].set_label("σ=%0.1f'', SNR=%0.2f/%0.2f=%0.2f, mag=%0.1f"%(self.popt[2]*pixel_scale,self.popt[0]**2,self.noise_res_element,self.measured_SNR ,self.mag))
+                        else:
+                            self.l3_s[0].set_label("σ=%0.1f'', SNR=%0.2f/%0.2f=%0.2f"%(self.popt[2]*pixel_scale,self.popt[0]**2,self.noise_res_element,self.measured_SNR))
+
+
+
+                        if self.spectrograph.value:
+                            self.nax.set_title(t1+': FOV = %i" × %iÅ, Slit=%0.1f" × %0.1f"'%(100*pixel_scale,500*dispersion, self.Slitwidth,self.Slitlength)) 
+                            self.nax0.set_title(t2+': Pixel size = %0.2f" × %0.2fÅ'%(pixel_scale,dispersion))
+                        else:
+                            self.nax.set_title(t1+': FOV = %i" × %i" '%(100*pixel_scale,500*pixel_scale)) 
+                            self.nax0.set_title(t2+': Pixel size = %0.2f" × %0.2f"'%(pixel_scale,pixel_scale))
+                        self.nax1.legend(loc="upper right",fontsize=8,title="Averaged profiles")
+                        self.nax1.relim()
+                        self.nax1.autoscale_view()
+
+                        [b.remove() for b in self.bars2]
+                        [b.remove() for b in self.bars1]
+                        n_,_,self.bars1 = self.nax2.hist(self.im[3:-3,3:-3].flatten() * factor,bins=self.bins* factor,alpha=0.3,color=self.l1[0].get_color(),label='Single image') #,log=True
+                        _,_,self.bars2 = self.nax2.hist(self.im_stack[3:-3,3:-3].flatten()* factor,bins=self.bins* factor,alpha=0.3,color=self.l2[0].get_color(),label='Averaged stack')#log=True,
+                        self.nax2.set_yscale("log")                       
+                        self.nax2.set_xlim(np.nanmin(self.bins)* factor,np.nanmax(self.bins)* factor)
+                        self.nax2.set_ylim(1,np.nanmax(n_))
+                        # self.nax2.relim()
+                        # self.nax2.autoscale_view()
+
+
+                        self.hw, self.hl = Slitwidth/2/pixel_scale ,  self.Slitlength/2/pixel_scale
+                        if (np.round(self.Slitlength,3)!=np.round(Slitwidth,3)):
+                            self.nax.lines[1].set_data(self.nan_if_imager *np.array([n1/2 - self.hw,n1/2 + self.hw,n1/2 + self.hw,n1/2 - self.hw,n1/2 - self.hw]),[n2/2 - self.hl,n2/2 - self.hl,n2/2 + self.hl,n2/2 + self.hl,n2/2 - self.hl])
+                            self.nax0.lines[0].set_data(self.nan_if_imager *np.array([n1/2 - self.hw,n1/2 + self.hw,n1/2 + self.hw,n1/2 - self.hw,n1/2 - self.hw]),[n2/2 - self.hl,n2/2 - self.hl,n2/2 + self.hl,n2/2 + self.hl,n2/2 - self.hl])
+                        else:
+                            self.nax.lines[1].set_data(n1/2 + Slitwidth/2/pixel_scale * self.nan_if_imager * np.cos( np.linspace( 0 , 2 * np.pi , 50 ) ),n2/2+Slitwidth/2/pixel_scale * np.sin( np.linspace( 0 , 2 * np.pi , 50 ) ))
+                            self.nax0.lines[0].set_data(n1/2 + Slitwidth/2/pixel_scale * self.nan_if_imager *np.cos( np.linspace( 0 , 2 * np.pi , 50 ) ),n2/2+Slitwidth/2/pixel_scale * np.sin( np.linspace( 0 , 2 * np.pi , 50 ) ))
+
+                        # labels = "  \n".join(['%s: %0.3f (%0.1f%%)'%(name,getattr(self.new,"electrons_per_pix")[self.new.i,j],100*getattr(self.new,"electrons_per_pix")[self.new.i,j]/np.sum(getattr(self.new,'electrons_per_pix')[self.new.i,:])) for j,name in enumerate(self.new.names)])
+                        # self.nax0.lines[0].set_label()
+                        # self.nax0.legend(loc="upper left", handlelength=0, handletextpad=0, fancybox=True, markerscale=0, fontsize=8, title="Signal contribution")
+                        contributions = getattr(self.new, "electrons_per_pix")[self.new.i, :]
+                        max_index = np.argmax(100 * contributions / np.sum(contributions))
+                        labels = "  \n".join([
+                            r'%s: %0.3f (%0.1f%%)' % (name, contributions[j], 100 * contributions[j] / np.sum(contributions))
+                            if j != max_index
+                            else r"➛$\mathbf{%s}$: %0.3f (%0.1f%%)" % (name, contributions[j], 100 * contributions[j] / np.sum(contributions))
+                            for j, name in enumerate(self.new.names)])
+
+                        # Update the label and legend for the plot
+                        self.nax0.lines[0].set_label(r'{}'.format(labels))
+                        self.nax0.legend(loc="upper left", handlelength=0, handletextpad=0, fancybox=True, markerscale=0, fontsize=8, title="Signal contribution")
+                        labels = [     r'%s: %0.2f (%0.1f%%)' % (name, self.new.noises[self.new.i, i] / self.new.factor[self.new.i], self.new.percents[i, self.new.i])     if self.new.percents[i, self.new.i] < np.max(self.new.percents[:, self.new.i])     else r"➛$\mathbf{%s}$: %0.2f (%0.1f%%)" % (name, self.new.noises[self.new.i, i] / self.new.factor[self.new.i], self.new.percents[i, self.new.i])     for i, name in enumerate(self.new.names)]
+                        self.nax.lines[0].set_label(r'{}'.format("\n".join(labels)))
+                        self.nax.legend(loc="upper left", handlelength=0, handletextpad=0, fancybox=True, markerscale=0, fontsize=8, title="%s Noise"%(self.instrument.value))
+
+                        self.nax2.lines[0].set_xdata([self.mod,self.mod])
+                        self.nax2.lines[1].set_xdata([self.limit[arg],self.limit[arg]])
+                        if "FIREBall" in  self.instrument.value:
+                            try:
+                                title = 'Signal kept=%i%%, RN kept=%i%%, Signal/tot=%i%%'%(100*self.new.Photon_fraction_kept[0], 100*self.new.RN_fraction_kept[0],100*(np.mean(self.im_stack[int(n2/2 - self.Size_source.value/pixel_scale/2/2.35):int(n2/2 + self.Size_source.value/pixel_scale/2/2.35),:])-np.mean(self.im_stack[:20,:]))/np.mean(self.im_stack[int(n2/2 - self.Size_source.value/pixel_scale/2/2.35):int(n2/2 + self.Size_source.value/pixel_scale/2/2.35),:]))
+                            except IndexError as e:
+                                title = 'Signal kept=%i%%, RN kept=%i%%, Signal/tot=%i%%'%(100*self.new.Photon_fraction_kept, 100*self.new.RN_fraction_kept[0],100*(np.mean(self.im_stack[int(n2/2 - self.Size_source.value/pixel_scale/2/2.35):int(n2/2 + self.Size_source.value/pixel_scale/2/2.35),:])-np.mean(self.im_stack[:20,:]))/np.mean(self.im_stack[int(n2/2 - self.Size_source.value/pixel_scale/2/2.35):int(n2/2 + self.Size_source.value/pixel_scale/2/2.35),:]))
+                            self.nax2.lines[0].set_label("Bias %0.3f, PC limit %0.3f (%s):\n%s "%(self.mod,self.limit[arg], counting_mode, title))
+                        else:
+                            self.nax2.lines[0].set_label(" ")
+                        # self.l1[0].set_ydata(factor*self.im[:,int(n1/2-self.Line_width.value/self.pixel_scale.value):int(n1/2+self.Line_width.value/self.pixel_scale.value)].mean(axis=1)) 
+                        # self.l2[0].set_ydata(factor*self.im[int(n2/2 - self.Size_source.value/self.pixel_scale.value/2/2.35):int(n2/2 + self.Size_source.value/self.pixel_scale.value/2/2.35),:].mean(axis=0)) 
+
+                        self.nax2.legend(loc='upper right',fontsize=8,title="Histogram - Pixels'values")
+                        self.fig2.tight_layout()
+                        self.fig2.canvas.draw()
+
+
+                if len(self.output_tabs.children)>2: 
+                    if self.output_tabs.get_state()["selected_index"]==self.output_tabs.children.index(self.out3): 
+                        with self.out3:
+                            if IFS:
+                                # TODO change
+                                # n3 = int(np.sqrt(60*60*self.instruments_dict[self.instrument.value]["FOV_size"])/self.Slitwidth)
+                                n3 = (n2 *pixel_scale) / Slitwidth
+                                if n3>n2 : 
+                                    n3=n2
+                                center = n1/2
+                                # print(n1,n2,n3)
+                                self.f = lambda x: wavelength + (dispersion/10) * (x - center)
+                                self.g = lambda x: (x - wavelength) / (dispersion/10) + center
+                                self.nax2s_secondary.remove()
+                                self.nax2s_secondary = self.nax2s.secondary_xaxis("top", functions=(self.f,self.g))
+                                if hasattr(self, 'cube_detector'):
+                                    self.cube_detector  *= factor
+                                    # print(self.cube_detector.shape)
+                                    self.cube_detector_stack  *= factor
+                                    self.im = self.cube_detector 
+                                    self.im_stack =  self.cube_detector_stack
+                                    # n1,n2,n3 = self.im.shape
+                                    # try:
+                                    ax, ay, az = self.im.shape
+
+                                    self.ifs_cube = np. transpose (self.cube_detector, (1, 2, 0))  
+                                    self.ifs_cube_stack =np.transpose (self.cube_detector_stack, (1, 2, 0))  
+                                    test = self.ifs_cube.copy()
+                                    # self.ifs_cube_stack = subtract_continuum(self.ifs_cube_stack,self.ifs_cube_stack)
+                                    # self.ifs_cube = subtract_continuum(test,test)
+
+
+                                    self.ifs_spectra[0].set_ydata(self.im[int(ax/2),int(ay/2)+int(Δx),:]) 
+                                    self.ifs_spectra_stack[0].set_ydata(self.im_stack[int(ax/2),int(ay/2)+int(Δx),:])
+                        
+                                    # ifs_integ_spectra_stack =       np.nanmean(self.ifs_cube_stack[int(n3/2-(n3/n2)*Slitwidth/pixel_scale):int(n3/2+(n3/n2)*Slitwidth/pixel_scale),int(n2/2-Slitwidth/pixel_scale):int(n2/2+Slitwidth/pixel_scale),:],axis=(0,1)) 
+                                    # self.ifs_integ_spectra_stack[0].set_ydata( ifs_integ_spectra_stack)
+
+
+                                if self.Slitlength>Slitwidth:
+                                    self.nax20.set_title(t12 + ": %i pixels × %i spaxels"%(n2,n3),fontsize=9)
+                                    # self.nax21.set_title("%0.1f' × %0.1f', full FOV= %0.1f' × %0.1f'"%(n2/pixel_scale/60,n3/pixel_scale/60,np.sqrt(self.FOV_size),np.sqrt(self.FOV_size)))
+                                    self.nax21.set_title(t22+ ": %0.1f' × %0.1f', full FOV= %0.1f' × %0.1f'"%(n2*pixel_scale/60,n3*Slitwidth/60, np.sqrt(self.FOV_size),np.sqrt(self.FOV_size)),fontsize=9)
+                                    self.nax20.set_ylabel("Real pixels")
+                                    self.nax20.set_xlabel("Spatial pixels/slices (%0.1f'')"%(Slitwidth))
+                                    self.nax21.set_xlabel("Spatial pixels/slices (%0.1f'')"%(Slitwidth))
+                                else:
+                                    self.nax20.set_xlabel("Spatial pixels/fibers (%0.1f''Ø)"%(Slitwidth))
+                                    self.nax20.set_ylabel("Spatial pixels/fibers (%0.1f''Ø)"%(Slitwidth))
+                                    self.nax21.set_xlabel("Spatial pixels/fibers (%0.1f''Ø)"%(Slitwidth))
+                                    self.nax20.set_title(r"%i × %i spaxels$^2$"%(n3,n3),fontsize=9)
+                                    self.nax21.set_title("%0.1f' × %0.1f', full FOV= %0.1f' × %0.1f'"%(n3*pixel_scale/60,n3/pixel_scale/60,np.sqrt(self.FOV_size),np.sqrt(self.FOV_size)),fontsize=9)
+
+                                # labels =  ['%s: %0.3f (%0.1f%%)'%(name,getattr(self.new,"electrons_per_pix")[self.new.i,j],100*getattr(self.new,"electrons_per_pix")[self.new.i,j]/np.sum(getattr(self.new,'electrons_per_pix')[self.new.i,:])) for j,name in enumerate(self.new.names)]
+                                labels = [r"➛$\mathbf{%s}$: %0.3f (%0.1f%%)" % (name, getattr(self.new, "electrons_per_pix")[self.new.i, j], 100 * getattr(self.new, "electrons_per_pix")[self.new.i, j] / np.sum(getattr(self.new, "electrons_per_pix")[self.new.i, :])) 
+                                        if getattr(self.new, "electrons_per_pix")[self.new.i, j] == np.max(getattr(self.new, "electrons_per_pix")[self.new.i, :]) 
+                                        else '%s: %0.3f (%0.1f%%)' % (name, getattr(self.new, "electrons_per_pix")[self.new.i, j], 100 * getattr(self.new, "electrons_per_pix")[self.new.i, j] / np.sum(getattr(self.new, "electrons_per_pix")[self.new.i, :])) 
+                                        for j, name in enumerate(self.new.names)]
+                                self.position2[0].set_label("  \n".join(labels)) 
+                                self.nax21.legend(loc="upper left",handlelength=0, handletextpad=0, fancybox=True,markerscale=0,fontsize=8,title="Signal contribution (/pix)")#Overall background: %0.3f (%0.1f%%)"%(np.nansum(self.new.electrons_per_pix[self.new.i,1:]),100*np.nansum(self.new.electrons_per_pix[self.new.i,1:])/np.nansum(self.new.electrons_per_pix[self.new.i,:])))
+                                
+                                labels = [     r'%s: %0.2f (%0.1f%%)' % (name, self.new.noises[self.new.i, i] / self.new.factor[self.new.i], self.new.percents[i, self.new.i])     if self.new.percents[i, self.new.i] < np.max(self.new.percents[:, self.new.i])     else r"➛$\mathbf{%s}$: %0.2f (%0.1f%%)" % (name, self.new.noises[self.new.i, i] / self.new.factor[self.new.i], self.new.percents[i, self.new.i])     for i, name in enumerate(self.new.names)]
+                                self.position1[0].set_label(r'{}'.format("\n".join(labels)))
+                                self.nax20.legend(loc="upper left", handlelength=0, handletextpad=0, fancybox=True, markerscale=0, fontsize=8, title="%s Noise (/pix)"%(self.instrument.value))
+
+                                # x1,x2 = (self.im.shape[0]-1)/2-(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale/2.35 ,  (self.im.shape[0]-1)/2+(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale/2.35
+                                # y1, y2 = Δx + (n2-1)/2-self.Size_source.value/pixel_scale/2.35 , Δx + (n2-1)/2+self.Size_source.value/pixel_scale/2.35
+                                x1,x2 = (self.im.shape[0]-1)/2-(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale ,  (self.im.shape[0]-1)/2+(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale
+                                y1, y2 = Δx + (n2-1)/2-self.Size_source.value/pixel_scale , Δx + (n2-1)/2+self.Size_source.value/pixel_scale
+
+                                self.position1[0].set_data([ (x1+x2)/2],[(y1+y2)/2]) 
+                                self.position2[0].set_data([(x1+x2)/2],[(y1+y2)/2]) 
+
+                                self.stack_square[0].set_data([x1,x2,x2,x1,x1],[y2,y2,y1,y1,y2])
+
+
+                                
+                                ifs_integ_spectra_stack =        np.nanmean(self.ifs_cube_stack[int(y1):int(y2),:,int(x1):int(x2)],axis=(0,2)) 
+                                self.ifs_integ_spectra_stack[0].set_ydata( ifs_integ_spectra_stack)
+
+
+                                im1 = np.nanmean(self.ifs_cube_stack[:,min(max(0,int(n1/2+0.5-lambda_stack/2)+int(Δλ)),n1-2)   :min(max(1,int(n1/2+0.5+lambda_stack/2)+int(Δλ)),n1-1),:],axis=1)
+                                im2 = np.nanmean(self.ifs_cube[:,min(max(0,int(n1/2+0.5-lambda_stack/2)+int(Δλ)),n1-2)   :min(max(1,int(n1/2+0.5+lambda_stack/2)+int(Δλ)),n1-1),:],axis=1)
+                                
+                                
+                                if log==False:
+                                    self.ifs_slice_stack = self.nax21.imshow(im1, aspect="auto",cmap=self.current_cmap,interpolation=interpolation, vmin=np.nanmin(im1)+ self.vmin*np.ptp(im1),vmax=np.nanmax(im1)-  (1-self.vmax)*np.ptp(im1))#,vmin=np.nanmin(self.ifs_cube_stack),vmax=np.nanmax(self.ifs_cube_stack))
+                                    self.ifs_slice       = self.nax20.imshow(im2, aspect="auto",cmap=self.current_cmap,interpolation=interpolation, vmin=np.nanmin(im1)+ self.vmin*np.ptp(im2),vmax=np.nanmax(im2)-  (1-self.vmax)*np.ptp(im2))
+                                else:
+                                    self.ifs_slice_stack = self.nax21.imshow(im1, aspect="auto",cmap=self.current_cmap,interpolation=interpolation,norm=SymLogNorm(linthresh=np.nanmax(im1)/10000, vmin=np.nanmin(im1)+ self.vmin*np.ptp(im1),vmax=np.nanmax(im1)-  (1-self.vmax)*np.ptp(im1)))
+                                    self.ifs_slice       = self.nax20.imshow(im2, aspect="auto",cmap=self.current_cmap,interpolation=interpolation,norm=SymLogNorm(linthresh=np.nanmax(im2)/10000, vmin=np.nanmin(im1)+ self.vmin*np.ptp(im2),vmax=np.nanmax(im2)-  (1-self.vmax)*np.ptp(im2)))
+                                    # self.ifs_slice_stack = self.nax21.imshow(im1, aspect="auto",cmap=self.current_cmap,interpolation=interpolation,norm=LogNorm( vmin=np.nanmin(im1)+ self.vmin*np.ptp(im1),vmax=np.nanmax(im1)-  (1-self.vmax)*np.ptp(im1)))
+                                    # self.ifs_slice       = self.nax20.imshow(im2, aspect="auto",cmap=self.current_cmap,interpolation=interpolation,norm=LogNorm( vmin=np.nanmin(im1)+ self.vmin*np.ptp(im2),vmax=np.nanmax(im2)-  (1-self.vmax)*np.ptp(im2)))
+                                self.cbar_slicer1 = self.fig3.colorbar(self.ifs_slice, cax=self.cax_slicer, orientation='vertical')
+                                self.cbar_slicer2 = self.fig3.colorbar(self.ifs_slice_stack, cax=self.cax_slicer0, orientation='vertical')
+                                if log==False:
+                                    self.cbar_slicer1.formatter.set_powerlimits((0, 0))
+                                    self.cbar_slicer2.formatter.set_powerlimits((0, 0))
+                                    self.cbar_slicer1.formatter.set_useMathText(True)
+                                    self.cbar_slicer2.formatter.set_useMathText(True)
+                                    self.nax2_rp.set_yscale('linear')
+                                    self.nax2s.set_yscale('linear')
+                                else:
+                                    self.nax2_rp.set_yscale('log')
+                                    self.nax2_rp.set_ylim(ymin=0.001)
+                                    self.nax2s.set_yscale('log')
+                                #     self.cbar_slicer1.set_yscale('log')
+                                #     self.cbar_slicer2.set_yscale('log')
+                                # self.ifs_slice_stack = self.nax21.imshow(np.nanmean(self.ifs_cube_stack[:,0:2,:],axis=1), aspect="auto",cmap=self.current_cmap)
+                                # print(min(max(0,int(n1/2+0.5-lambda_stack/2)+int(Δλ/dispersion)),n1-1)  ,min(max(0,int(n1/2+0.5+lambda_stack/2)+int(Δλ/dispersion)),n1-1))
+                                if ~self.only_spectra:
+                                    ratio = int(im2.shape[0]/im2.shape[1])+1
+                                    # print(im2.shape[0],im2.shape[1],ratio)
+                                    radial = np.hstack([im2[:, i:i+1].repeat(ratio, axis=1) for i in range(im2.shape[1])])
+                                    # print(radial.shape)
+                                    self.res1.set_xdata([2.355*PSF_RMS_det/2,2.355*PSF_RMS_det/2])
+                                    self.res2.set_xdata([Slitwidth/2,Slitwidth/2])
+                                    try : 
+                                        rsurf, rmean, profile, EE, NewCenter, stddev = radial_profile_normalized(radial,center=(ratio*(x1+x2)/2, (y1+y2)/2),anisotrope=False,n=n,center_type="maximum",size=100)
+                                        rsurf2, rmean2, profile2, EE, NewCenter, stddev = radial_profile_normalized( np.hstack([im1[:, i:i+1].repeat(ratio, axis=1) for i in range(im2.shape[1])]),center=NewCenter,anisotrope=False,n=n,center_type="User",size=100)
+                                        self.rp[0].set_data(rmean2[:40],profile2[:40])
+                                        if self.source_im.value != "Source":
+                                            self.rp2[0].set_data(rmean[:40],profile[:40])
+                                        else:
+                                            self.rp2[0].set_data([np.nan,np.nan],[np.nan,np.nan])
+                                        # gaus_profile = lambda  x, a, sigma : a ** 2 * np.exp(-np.square(x / sigma) / 2)
+                                        gaus_profile = lambda x, a, sigma: a**2 * np.exp(- (x)**2 / (2 * sigma**2))
+                                        popt, pcov = curve_fit(gaus_profile, rmean2[:40],profile2[:40], p0=[np.ptp(profile2[:40]), 2])
+                                        self.rp_fit[0].set_data(np.linspace(0,np.max(rmean[:40]),100),gaus_profile(np.linspace(0,np.max(rmean[:40]),100),*popt))
+                                        self.rp_fit[0].set_label("Gaussian fit: σ={:.1f}''".format(popt[1]*pixel_scale))#
+                                        # self.diff[0].set_data(rmean2[:40],np.cumsum((profile2[:40]-gaus_profile(rmean2[:40],*popt))/ np.cumsum(gaus_profile(rmean2[:40],*popt))))
+                                        
+                                        self.diff[0].set_data(rmean2[:40],(np.cumsum(profile2[:40]*rmean2[:40]-rmean2[:40]*gaus_profile(rmean2[:40],*popt))/np.cumsum(rmean2[:40]*gaus_profile(rmean2[:40],*popt))))
+                                    except ValueError:
+                                        self.rp_fit[0].set_data([np.nan,np.nan],[np.nan,np.nan])
+                                        self.diff[0].set_data([np.nan,np.nan],[np.nan,np.nan])
+                                    
+
+                                    self.nax2_rp.legend(fontsize=7,loc="upper right",title="Radial profiles",title_fontsize=8)
+                                    # self.nax2_rp.plot(rmean2, profile2,":")
+                                    # self.nax2_rp.set_ylim((np.nanmin(profile),np.nanmax(profile)))
+                                    # self.nax2_rp.set_xlim((np.nanmin(rmean),np.nanmax(rmean)))
+                                    self.nax2_rp.relim()                 # Recalculate limits based on current data
+                                    self.nax2_rp.autoscale(enable=True, axis='both')
+                                    self.nax2_rp2.relim()                 # Recalculate limits based on current data
+                                    self.nax2_rp2.autoscale(enable=True, axis='both')
+                                
+ 
+
+                                self.wavelength_line1.set_xdata([int(n1/2)+int(Δλ)+0.5+(lambda_stack-1)/2,int(n1/2)+int(Δλ)+0.5+(lambda_stack-1)/2])
+                                self.wavelength_line2.set_xdata([int(n1/2)+int(Δλ)+0.5-(lambda_stack-1)/2,int(n1/2)+int(Δλ)+0.5-(lambda_stack-1)/2])
+                                self.wavelength_line1.set_label("λ = %0.1f-%0.1f nm"%(self.f(int(n1/2)+int(Δλ)+0.5-(lambda_stack-1)/2), self.f(int(n1/2)+int(Δλ)+0.5+(lambda_stack-1)/2)))
+                                self.nax2s.legend(fontsize=7,loc="upper right")
+                                self.ifs_slice.set_clim(vmin=np.nanmin(self.ifs_cube), vmax=np.nanmax(self.ifs_cube))
+                                # self.nax2s.set_ylim((np.nanmin(list(self.im_stack[int(ax/2),int(n2/2),:]) +list(ifs_integ_spectra_stack)),np.nanmax(list(self.im_stack[int(ax/2),int(n2/2),:]) + list(ifs_integ_spectra_stack) )))
+                                # self.nax2s.set_ylim((np.nanmin(list(self.im_stack[int(ax/2),int(n2/2),:]) ),np.nanmax(list(self.im_stack[int(ax/2),int(n2/2),:])  )))
+
+                                title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i, t=%ih, F=%0.1E'%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value, 100*100*self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  pixel_scale, 2.35*self.PSF_RMS_det/pixel_scale, 10*self.wavelength.value/self.Spectral_resolution.value/dispersion, self.number_pixels_used, self.acquisition_time.value, self.Signal.value)   
+                                # self.fig3.suptitle("Spectral image of %s at %0.1f nm"%(self.instrument.value, wavelength), fontsize=10)
+                                self.fig3.suptitle(title,y=0.97,fontsize=10)
+
+                    # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$'%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0])
+
+
+                                self.nax2s.relim()                 # Recalculate limits based on current data
+                                self.nax2s.autoscale(enable=True, axis='both')
+
+
+                                self.nax2s.set_xlim((200,300))
+                                # self.nax2s.set_xlim((240,260))
+                                self.fig3.tight_layout()
+                                self.fig3.canvas.draw()
+                            self.change.value=True
+
+         
+                    
+    def update_instrument(self, instrument):
+        # with self.output:
+        with self.out1:
+            # print(1)
+            #HACK this was added here just because there is another issue with imagers
+            self.change.value=False
+            # print(1.2)
+            self.spectro = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
+            # print(1.3)
+            self.spectrograph.value = self.spectro
+            # print(1.4)
+            self.spectra.options =self.spectra_options if self.spectrograph.value else ["Gaussian","10 kpc spiral galaxy","10 kpc spiral galaxy + CGM","30 kpc spiral galaxy","100 kpc spiral galaxy"]#,"10 kpc spiral galaxy + CGM + 0.0001 filament","10 kpc spiral galaxy + CGM + 0.001 filament",
+            # print(2)
+            if self.spectrograph.value:
+                self.output_tabs.set_title(1, 'Spectral image')
+                self.Redshift.disabled = False if "Rest-frame" in self.spectra.value else True
+            else:
+                self.output_tabs.set_title(1, 'Image')
+                self.Redshift.disabled = True if "Gaussian" in self.spectra.value else False
+            # print(3)
+
+            self.follow_temp.layout.visibility = 'visible' if ("FIREBall-2" in instrument) else 'hidden'
+            self.Line_width.layout.visibility = 'visible' if self.spectrograph.value else 'hidden'
+            self.lambda_stack.layout.visibility = 'visible' if self.spectrograph.value else 'hidden'
+            self.wavelength.layout.visibility = 'visible' if self.spectrograph.value else 'hidden'
+
+            # print(4)
+            self.QElambda.layout.visibility = 'visible' if self.spectrograph.value else 'hidden'
+            # self.atmlambda.layout.visibility = 'visible' if self.spectrograph.value else 'hidden'
+            # self.sky_lines.layout.visibility = 'visible' if self.spectrograph.value else 'hidden'
+            self.Δλ.layout.visibility = 'visible' if self.spectrograph.value else 'hidden'
+
+            # print(5)
+
+            # self.spectra.layout.visibility = 'visible' if self.spectro else 'hidden'
+            # self.spectra.value ="10 kpc spiral galaxy"
+            keys = list(self.instruments_dict[instrument].keys())
+            keys.remove("Signal")
+            print(5)
+            for key in keys:
+                if ~np.isnan(self.instruments_dict[instrument][key]):
+                    # print(key, self.instruments_dict[instrument][key])
+                    # rsetattr(self, '%s.value'%(key), self.instruments_dict[instrument][key]) 
+                    try:
+                        rsetattr(self, '%s.value'%(key), self.instruments_dict[instrument][key]) 
+                        # print(key, self.instruments_dict[instrument][key])
+                    except AttributeError as e:
+                        setattr( self, key, self.instruments_dict[instrument][key])
+                        print(e)
+                    # print(key, self.instruments_dict[instrument][key])
+            self.IFS.value = True if ((self.dimensions==3) & self.spectrograph.value) else False
+            self.counting_mode.layout.visibility = 'visible' if self.EM_gain.value > 1 else 'hidden'
+
+            # print(6)
+            self.atmlambda.disabled = False if ((self.Altitude<100) & self.spectrograph.value) else True
+            self.sky_lines.disabled = False if (self.spectrograph.value &((self.Altitude<10)   |   (os.path.exists("../data/Instruments/%s/Sky_emission_lines.csv"%(instrument.upper().replace(" ","_"))) )    )) else True  
+            if self.spectrograph.value:
+                self.Throughput_FWHM.layout.visibility = 'visible' if ((self.QElambda.value) &   ~(os.path.exists("../data/Instruments/%s/Throughput.csv"%(instrument.upper().replace(" ","_"))) )      )  else 'hidden'
+            else:
+                self.Throughput_FWHM.layout.visibility = 'visible'
+            if ~self.spectrograph.value:
+                self.QElambda.value = True
+                self.atmlambda.value = True if (self.Altitude<100) else False
+                self.sky_lines.value = True if (self.Altitude<10) else False
+
+            # print(7)
+            self.fwhm.value = (self.PSF_RMS_mask, self.PSF_RMS_det )
+            self.SlitDims.value = (self.Slitwidth, self.Slitlength) 
+            self.exposure.value = (self.readout_time, self.instruments[instrument][self.instruments["Charact."]=="exposure_time"][0] )
+            self.smearing.layout.visibility = 'visible' if (("FIREBall-2" in instrument)|("SCWI" in instrument)) & (self.counting_mode.value)    else 'hidden'
+            self.temperature.layout.visibility = 'visible' if ("FIREBall-2" in instrument) &  (self.follow_temp.value)  else 'hidden'
+            # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$, PSF_{x,λ}=%0.1,%0.1pix '%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0],    )
+            title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i '%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value,100*100* self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  self.pixel_scale.value, 2.35*self.PSF_RMS_det/self.pixel_scale.value, 10*self.wavelength.value/self.Spectral_resolution.value/self.dispersion.value, self.number_pixels_used    )
+            # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$'%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0])
+            self.ax0.set_title(title,y=0.97,fontsize=10)
+            # print(8)
+            self.change.value=True
+            self.fig.tight_layout
+
+            self.on_instrument_change()
+            self.show_tab3() if self.IFS.value else self.hide_tab3()
+            # print(9)
+            self.update(x_axis=self.x_axis.value, counting_mode=self.counting_mode.value,Sky=self.Sky.value,acquisition_time=self.acquisition_time.value,Signal=self.Signal.value,EM_gain=self.EM_gain.value,RN=self.RN.value,CIC_charge=self.CIC_charge.value,Dark_current=self.Dark_current.value,exposure=self.exposure.value,smearing=self.smearing.value,temperature=self.temperature.value,follow_temp=self.follow_temp.value,fwhm=self.fwhm.value,QE=self.QE.value,extra_background=self.extra_background.value,log=self.ylog.value,SNR_res=self.SNR_res.value,
+            xlog=self.xlog.value , Collecting_area=self.Collecting_area.value , pixel_scale=self.pixel_scale.value , Throughput=self.Throughput.value , Spectral_resolution=self.Spectral_resolution.value , SlitDims=self.SlitDims.value , dispersion=self.dispersion.value , Size_source=self.Size_source.value , Line_width=self.Line_width.value , wavelength=self.wavelength.value , Δλ=self.Δλ.value , Δx=self.Δx.value , Atmosphere=self.Atmosphere.value , pixel_size=self.pixel_size.value , cosmic_ray_loss_per_sec=self.cosmic_ray_loss_per_sec.value, lambda_stack = self.lambda_stack.value,change=self.change,         test=self.test,
+            spectra=self.spectra.value,units=self.units.value,Throughput_FWHM=self.Throughput_FWHM.value, QElambda=self.QElambda.value, atmlambda=self.atmlambda.value, fraction_lya=self.fraction_lya.value, IFS=self.IFS.value,sky_lines=self.sky_lines.value, Redshift=self.Redshift.value, Bandwidth=self.Bandwidth)
+            # print(10)
+        return
+    
+
+def subtract_continuum(im,continuum_im):
+    """
+    Subtracts a linear continuum interpolated along the spectral axis (axis=1)
+    from the datacubes self.ifs_cube_stack and self.ifs_cube.
+    """
+    # Get shape (ny, nwave, nx)
+    ny, nwave, nx = im.shape
+
+    # Step 1: compute average continuum images on the spectral edges
+    im1 = np.nanmean(continuum_im[:, :10, :], axis=1)  # shape (ny, nx)
+    im2 = np.nanmean(continuum_im[:, -10:, :], axis=1)  # shape (ny, nx)
+
+    # Step 2: create linear interpolation along axis=1 (wavelength axis)
+    # Generate normalized interpolation weights (from 0 to 1)
+    weights = np.linspace(0, 1, nwave)[np.newaxis, :, np.newaxis]  # shape (1, nwave, 1)
+
+    # Broadcast im1 and im2 for interpolation
+    continuum = (1 - weights) * im1[:, np.newaxis, :] + weights * im2[:, np.newaxis, :]  # shape (ny, nwave, nx)
+
+    # Step 3: subtract continuum from cubes
+    ifs_im_contsub = im - continuum
+    return ifs_im_contsub
+
+
 
 
 class Observation:
@@ -505,7 +2243,7 @@ class Observation:
         #####################################
         # Adjust signal for circular aperture (fiber) geometry
         #####################################
-                if type(self.Slitlength) == np.float64:
+        if type(self.Slitlength) == np.float64:
             if (self.Slitlength==self.Slitwidth):
                 self.Signal *= np.pi/4 # ratio between fiber disk and square slit
         #####################################
