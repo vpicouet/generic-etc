@@ -36,6 +36,7 @@ from scipy.stats import norm
 from matplotlib.offsetbox import AnchoredText
 from scipy.optimize import curve_fit
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.colors import LogNorm, SymLogNorm
 
 np.seterr(invalid='ignore')
  
@@ -116,7 +117,7 @@ def convert_fits_cube(input_fits, output_fits, output_shape, wave_range_nm, spat
 
     hdu = fits.PrimaryHDU(data=resampled_cube, header=header)
     hdu.writeto(output_fits, overwrite=True)
-    return output_fits
+    return resampled_cube
 
 
 def convert_LU2ergs(LU,wave_nm): #TODO here it should not be 200 nm but 1216 so we need indeed to account for the Redshift!!!
@@ -138,33 +139,7 @@ def convert_ergs2LU(flux_ergs,wave_nm):
     # LU = flux_ergs / (Energy * solid_angle)  # Convert ergs to LU
 
 
-# def resample_cube(input_cube, wave_range_nm, spatial_extent_arcsec, output_shape, phys=False):
-#     """
-#     Resample un datacube avec interpolation/extrapolation selon longueur d'onde et spatial.
-#     """
-#     header = input_cube.header
-#     input_cube=input_cube.data
-#     wave_start_out, wave_end_out = wave_range_nm
-#     input_nz, input_nx, input_ny = input_cube.data.shape
-#     # print(input_cube.data.shape)
-#     cunit3 = header.get('CUNIT3', 'nm').strip().lower()
-#     # Définition du facteur de conversion
-#     unit_conversion = {
-#         'm': 1e9,       # mètres → nanomètres
-#         'cm': 1e7,      # centimètres → nanomètres
-#         'mm': 1e6,      # millimètres → nanomètres
-#         'um': 1e3,      # micromètres → nanomètres
-#         'nm': 1,        # nanomètres (aucun changement)
-#         'angstrom': 0.1 # Ångströms → nanomètres
-#     }
-#     factor = unit_conversion.get(cunit3, 1)  # Valeur par défaut = 1 (nm)
-#     # Calcul correct des longueurs d'onde en tenant compte de l'unité
-#     wave_start_in = (header['CRVAL3'] + (1 - header['CRPIX3']) * header['CDELT3']) * factor
-#     wave_end_in = (header['CRVAL3'] + (input_nz - header['CRPIX3']) * header['CDELT3']) * factor
-
-#     print(wave_start_in,wave_end_in)
-
-def resample_cube(input_hdu, wave_range_nm, spatial_extent_arcsec, output_shape, phys=False):
+def resample_cube(input_hdu, wave_range_nm, spatial_extent_arcsec, output_shape, phys=False, mode="interp"):
     """
     Resample a datacube with interpolation/extrapolation in wavelength and spatial directions.
     """
@@ -206,50 +181,112 @@ def resample_cube(input_hdu, wave_range_nm, spatial_extent_arcsec, output_shape,
         x_grid, y_grid, z_grid = np.meshgrid(x_out, y_out, z_out, indexing='ij')
         resampled_cube = map_coordinates(input_cube, [x_grid, y_grid, z_grid], order=1, mode='nearest')
         return resampled_cube
+
     else:
-        # in this case I just keep the exact same cube and act as if it was exactly the size of the FOV
-        # print("phys",phys,True)
-        # if we are out of limit, we change the reshift of the cube to end in the limit:
-        # wave_start_in, wave_end_in = 203,205
-        # wave_start_out, wave_end_out = 400, 500
-        input_wave_center = (wave_start_in+ wave_end_in)/2
-        inst_wave_center = (wave_start_out+ wave_end_out)/2
-        if 1>0 : #(input_wave_center < wave_start_out ) | (input_wave_center> wave_end_out):
-            ratio = inst_wave_center/input_wave_center
-            # print(ratio)
-            # = 121.5
-            redshift = inst_wave_center/(input_wave_center/(1+0.7))-1
-            # print(redshift)
-            wave_start_in, wave_end_in = wave_start_in*ratio, wave_end_in*ratio
+        # phys = vrai traitement spectral + spatial
         input_wave = np.linspace(wave_start_in, wave_end_in, input_nz)
-        # print(input_wave)
-        input_x = np.linspace(-abs(spatial_radius_in_x), abs(spatial_radius_in_x), input_nx)
-        input_y = np.linspace(-abs(spatial_radius_in_y),abs( spatial_radius_in_y), input_ny)
-
+        input_x = np.linspace(-spatial_radius_in_x, spatial_radius_in_x, input_nx)
+        input_y = np.linspace(-spatial_radius_in_y, spatial_radius_in_y, input_ny)
         output_wave = np.linspace(wave_start_out, wave_end_out, output_shape[0])
-        # print(wave_start_in, wave_end_in, wave_start_out, wave_end_out)
-        output_x = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[2])
-        output_y = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[1])        
+        output_x = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[1])
+        output_y = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[2])
 
-        interpolator = RegularGridInterpolator(
-            (input_wave, input_x, input_y),
-            input_cube,
-            method='linear',
-            bounds_error=False,
-            fill_value=None
-        )
-        W, X, Y = np.meshgrid(output_wave, output_x, output_y, indexing='ij')
-        resampled_cube = interpolator((W, X, Y))
-        if np.nanmin(resampled_cube)<0:
+        if mode == "interp":
+            # Ton code original
+            interpolator = RegularGridInterpolator(
+                (input_wave, input_x, input_y),
+                input_cube,
+                method='linear',
+                bounds_error=False,
+                fill_value=0.0
+            )
+            W, X, Y = np.meshgrid(output_wave, output_x, output_y, indexing='ij')
+            resampled_cube = interpolator((W, X, Y))
+
+        elif mode == "pad":
+            # Padding spatial avant interpolation
+            pad_size = 10
+            padded_cube = np.pad(input_cube, ((0, 0), (pad_size, pad_size), (pad_size, pad_size)),
+                                 mode="constant", constant_values=0)
+            input_x = np.linspace(-spatial_radius_in_x, spatial_radius_in_x, padded_cube.shape[1])
+            input_y = np.linspace(-spatial_radius_in_y, spatial_radius_in_y, padded_cube.shape[2])
+            interpolator = RegularGridInterpolator(
+                (input_wave, input_x, input_y),
+                padded_cube,
+                method='linear',
+                bounds_error=False,
+                fill_value=0.0
+            )
+            W, X, Y = np.meshgrid(output_wave, output_x, output_y, indexing='ij')
+            resampled_cube = interpolator((W, X, Y))
+
+        elif mode == "spectral":
+            # Interpolation spectrale voxel par voxel spatial
+            resampled_cube = np.zeros(output_shape)
+            for ix in range(min(input_nx, output_shape[1])):
+                for iy in range(min(input_ny, output_shape[2])):
+                    resampled_cube[:, ix, iy] = np.interp(
+                        output_wave, input_wave, input_cube[:, ix, iy], left=0, right=0
+                    )
+
+        else:
+            raise ValueError("mode must be 'interp', 'pad', or 'spectral'")
+
+        # Sécurité : pas de négatifs
+        if np.nanmin(resampled_cube) < 0:
             resampled_cube -= np.nanmin(resampled_cube)
         scale_factor = (
             (output_x[1] - output_x[0]) / (input_x[1] - input_x[0]) *
             (output_y[1] - output_y[0]) / (input_y[1] - input_y[0]) *
             (output_wave[1] - output_wave[0]) / (input_wave[1] - input_wave[0])
         )
-        # print(np.max(resampled_cube),scale_factor)
-        return resampled_cube * scale_factor
-        # TODO est ce des pixels ou autre chose ?? si c'est des pixels il faut multiplier par le rapport de la taille des pixels
+        print(scale_factor,resampled_cube)
+        return resampled_cube * abs(scale_factor)
+
+    # else:
+    #     # in this case I just keep the exact same cube and act as if it was exactly the size of the FOV
+    #     # print("phys",phys,True)
+    #     # if we are out of limit, we change the reshift of the cube to end in the limit:
+    #     # wave_start_in, wave_end_in = 203,205
+    #     # wave_start_out, wave_end_out = 400, 500
+    #     input_wave_center = (wave_start_in+ wave_end_in)/2
+    #     inst_wave_center = (wave_start_out+ wave_end_out)/2
+    #     if 1>0 : #(input_wave_center < wave_start_out ) | (input_wave_center> wave_end_out):
+    #         ratio = inst_wave_center/input_wave_center
+    #         # print(ratio)
+    #         # = 121.5
+    #         redshift = inst_wave_center/(input_wave_center/(1+0.7))-1
+    #         # print(redshift)
+    #         wave_start_in, wave_end_in = wave_start_in*ratio, wave_end_in*ratio
+    #     input_wave = np.linspace(wave_start_in, wave_end_in, input_nz)
+    #     # print(input_wave)
+    #     input_x = np.linspace(-abs(spatial_radius_in_x), abs(spatial_radius_in_x), input_nx)
+    #     input_y = np.linspace(-abs(spatial_radius_in_y),abs( spatial_radius_in_y), input_ny)
+
+    #     output_wave = np.linspace(wave_start_out, wave_end_out, output_shape[0])
+    #     # print(wave_start_in, wave_end_in, wave_start_out, wave_end_out)
+    #     output_x = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[2])
+    #     output_y = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[1])        
+
+    #     interpolator = RegularGridInterpolator(
+    #         (input_wave, input_x, input_y),
+    #         input_cube,
+    #         method='linear',
+    #         bounds_error=False,
+    #         fill_value=None
+    #     )
+    #     W, X, Y = np.meshgrid(output_wave, output_x, output_y, indexing='ij')
+    #     resampled_cube = interpolator((W, X, Y))
+        # if np.nanmin(resampled_cube)<0:
+        #     resampled_cube -= np.nanmin(resampled_cube)
+        # scale_factor = (
+        #     (output_x[1] - output_x[0]) / (input_x[1] - input_x[0]) *
+        #     (output_y[1] - output_y[0]) / (input_y[1] - input_y[0]) *
+        #     (output_wave[1] - output_wave[0]) / (input_wave[1] - input_wave[0])
+        # )
+        # # print(np.max(resampled_cube),scale_factor)
+        # return resampled_cube * scale_factor
+        # # TODO est ce des pixels ou autre chose ?? si c'est des pixels il faut multiplier par le rapport de la taille des pixels
 
 
 
@@ -677,9 +714,10 @@ class ExposureTimeCalulator(widgets.HBox):
 
         self.cosmic_ray_loss_per_sec = widgets.FloatSlider( min=0, max=0.1,value=self.cosmic_ray_loss_per_sec,base=10, style =style,step=0.0001,readout_format='.4f', layout=Layout(width=width),description='CR loss',description_tooltip="Cosmic ray loss per second. eg. 0.01 would mean that 1 sec image looses 1% pixels due to cosmic rays",continuous_update=c_update)
 
-        self.gals = ["Rest-frame: COSMOS " + os.path.basename(f).replace(".txt","") for f in glob.glob("../data/Spectra/GAL_COSMOS_SED/*.txt")]
-        self.QSOs = ["Rest-frame: Salvato " + os.path.basename(f).replace(".txt","") for f in glob.glob("../data/Spectra/QSO_SALVATO2015/*.txt")]
-        self.spectra_options = ["Observed-frame: Baseline Spectra", "Rest-frame: Baseline Lyα (1216Å)", "Rest-frame: Baseline CIV (1549Å)", "Rest-frame: Baseline OVI (1033Å)", "Rest-frame: Baseline CIII (1908Å)","galaxy_disk_cube-resampled_phys","galaxy_disk_cube-resampled","galaxy_and_cgm_cube-resampled_phys","galaxy_and_cgm_cube-resampled","CGM_cube-resampled_phys","CGM_cube-resampled",]  + self.gals + self.QSOs + ["Rest-frame: Blackbody 5900 K (09V)","Rest-frame: Blackbody 1500 K (BOV)","Rest-frame: Blackbody 9000 K (B3V)","Rest-frame: Blackbody 480 K (AOV)","Rest-frame: Blackbody 8810 K (A2V)","Rest-frame: Blackbody 8160 K (A5V)","Rest-frame: Blackbody 7020 K (FOV)","Rest-frame: Blackbody 6750 K (F2V)","Rest-frame: Blackbody 6530 K (F5V)","Rest-frame: Blackbody 930 K (GOV)","Rest-frame: Blackbody 5830 K (G2V)","Rest-frame: Blackbody 5560 K (G5V)","Rest-frame: Blackbody 240 K (KOV)","Rest-frame: Blackbody 5010 K (K2V)","Rest-frame: Blackbody 4560 K (K4V)","Rest-frame: Blackbody 4340 K (K5V)","Rest-frame: Blackbody 4040 K (K7V)","Rest-frame: Blackbody 3800 K (MOV)","Rest-frame: Blackbody 3530 K (M2V)","Rest-frame: Blackbody 3380 K (M3V)","Rest-frame: Blackbody 3180 K (M4V)","Rest-frame: Blackbody 3030 K (M5V)","Rest-frame: Blackbody 2850 K (M6V)"] + ["Observed-frame: UVSpectra 1538p477 NUV~16.6","Observed-frame: UVSpectra 1821p643 NUV~14",'Observed-frame: UVSpectra 0044p030 NUV~16.5',"Observed-frame: UVSpectra mrk509","Observed-frame: UVSpectra 2344p092","Observed-frame: UVSpectra 1637p574","Observed-frame: UVSpectra 1115p080","Observed-frame: UVSpectra 0414m060","Observed-frame: UVSpectra 0115p027","Observed-frame: UVSpectra 2251p113","Observed-frame: UVSpectra 2201p315","Observed-frame: UVSpectra 1928p738","Observed-frame: UVSpectra 1700p518","cube 10 kpc galaxy + Lya em CGM+Filament","cube 30 kpc galaxy + Lya em CGM+Filament","cube 100 kpc galaxy + Lya em CGM+Filament","lya_cube_merged_with_artificial_source_CU_1pc-resampled_phys","lya_cube_merged_with_artificial_source_CU_1pc-resampled","cube_01-resampled_phys","cube_01-resampled"]#,"lya_cube_merged_with_artificial_source_CU_1pc_map","lya_cube_merged_with_artificial_source_CU_1pc_resampled"] 
+        self.gals = ["↳ Rest-frame: COSMOS " + os.path.basename(f).replace(".txt","") for f in glob.glob("../data/Spectra/GAL_COSMOS_SED/*.txt")]
+        self.QSOs = ["↳ Rest-frame: Salvato " + os.path.basename(f).replace(".txt","") for f in glob.glob("../data/Spectra/QSO_SALVATO2015/*.txt")]
+        self.backbodies = ["↳ Rest-frame: Blackbody " + bb for bb in ["5900 K (09V)","Blackbody 1500 K (BOV)","9000 K (B3V)","480 K (AOV)","8810 K (A2V)","8160 K (A5V)","7020 K (FOV)","6750 K (F2V)","6530 K (F5V)","930 K (GOV)","5830 K (G2V)","5560 K (G5V)","240 K (KOV)","5010 K (K2V)","4560 K (K4V)","4340 K (K5V)","4040 K (K7V)","3800 K (MOV)","3530 K (M2V)","3380 K (M3V)","3180 K (M4V)","3030 K (M5V)","2850 K (M6V)"] ]
+        self.spectra_options = ["Observed-frame: Baseline Spectra", "↳ Rest-frame: Baseline Lyα (1216Å)", "↳ Rest-frame: Baseline CIV (1549Å)", "↳ Rest-frame: Baseline OVI (1033Å)", "↳ Rest-frame: Baseline CIII (1908Å)",]  + self.gals + self.QSOs + self.backbodies+ ["↳ Observed-frame: UVSpectra 1538p477 NUV~16.6","↳ Observed-frame: UVSpectra 1821p643 NUV~14",'↳ Observed-frame: UVSpectra 0044p030 NUV~16.5',"↳ Observed-frame: UVSpectra mrk509","↳ Observed-frame: UVSpectra 2344p092","↳ Observed-frame: UVSpectra 1637p574","↳ Observed-frame: UVSpectra 1115p080","↳ Observed-frame: UVSpectra 0414m060","↳ Observed-frame: UVSpectra 0115p027","↳ Observed-frame: UVSpectra 2251p113","↳ Observed-frame: UVSpectra 2201p315","↳ Observed-frame: UVSpectra 1928p738","↳ Observed-frame: UVSpectra 1700p518","------SIMULATED CUBES------","↳ cube 10 kpc galaxy + Lya em CGM+Filament","↳ cube 30 kpc galaxy + Lya em CGM+Filament","↳ cube 100 kpc galaxy + Lya em CGM+Filament","↳ lya_cube_merged_with_artificial_source_CU_1pc-resampled_phys","↳ lya_cube_merged_with_artificial_source_CU_1pc-resampled","↳ cube_01-resampled_phys","↳ cube_01-resampled","↳ galaxy_disk_cube-resampled_phys","↳ galaxy_disk_cube-resampled","↳ galaxy_and_cgm_cube-resampled_phys","↳ galaxy_and_cgm_cube-resampled","↳ CGM_cube-resampled_phys","↳ CGM_cube-resampled","↳ cube CGM+IGM-resampled_phys","↳ cube CGM+IGM-resampled"]#,"lya_cube_merged_with_artificial_source_CU_1pc_map","lya_cube_merged_with_artificial_source_CU_1pc_resampled"] 
         # self.spectra     = widgets.Dropdown(options=self.spectra_options, layout=Layout(width='350px'),description='Spectra',value="galaxy_and_cgm_cube-resampled_phys",continuous_update=c_update)#Observed-frame: Baseline Spectra   "lya_cube_merged_with_artificial_source_CU_1pc-remap"
         self.spectra     = widgets.Dropdown(options=self.spectra_options, layout=Layout(width='350px'),description='Spectra',value="Observed-frame: Baseline Spectra",continuous_update=c_update)#Observed-frame: Baseline Spectra   "lya_cube_merged_with_artificial_source_CU_1pc-remap"
         self.units       = widgets.Dropdown(options=["ADU/frame","e-/frame","photons/frame","e-/hour","photons/hour","e-/second","photons/second"], layout=Layout(width='350px'),description='Units',value="ADU/frame")# TODO add ergs/cm2/... "amplified e-/frame","amplified e-/hour",
@@ -3120,6 +3158,7 @@ class Observation:
         from astropy.modeling.functional_models import Gaussian2D, Gaussian1D
         from scipy.sparse import dia_matrix
         from scipy.interpolate import interp1d
+        source = source.replace("↳ ","")
         self.fast = True
         self.Redshift=Redshift
         for key in list(self.instruments["Charact."]) + ["Signal_el","N_images_true","Dark_current_f","sky"]:
@@ -3246,28 +3285,33 @@ class Observation:
                 elif ("cube" in source):
                     n_wave=size[0]
                     if os.path.isfile("../data/Emission_cube/"+ source.split("-")[0] + ".fits"):
-                        # print(source)
                         phys = True if source.split("-")[1]=="resampled_phys" else False
-                        # if source.split("-")[0] == "lya_cube_merged_with_artificial_source_CU_1pc":
                         name_ = "_resampled_phys.fits" if phys else "_resampled.fits"
-                        # print("../data/Emission_cube/"+ source.split("-")[0] + ".fits")
-                        new_cube = convert_fits_cube("../data/Emission_cube/"+ source.split("-")[0] + ".fits","../data/Emission_cube/"+ source.split("-")[0] + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,phys=phys)                         
-                        cube_detector =  fits.open(new_cube)[0].data
-                        # print(1, np.max(cube_detector), np.min(cube_detector))
+                        cube_detector = convert_fits_cube("../data/Emission_cube/"+ source.split("-")[0] + ".fits","../data/Emission_cube/"+ source.split("-")[0] + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,phys=phys)                         
+                        # cube_detector =  fits.open(new_cube)[0].data
                         cube_detector -= np.nanmedian(cube_detector)
                         cube_detector[cube_detector<np.nanmedian(cube_detector)]= np.nanmedian(cube_detector)
-                        # print(2, np.max(cube_detector), np.min(cube_detector))
-                        # else:
-                        #     cube_detector = fits.open("../data/Emission_cube/"+ source + ".fits")[0].data
-                        # if np.nanmin(cube_detector) < 0:
-                        # cube_detector[cube_detector==np.nanmin(cube_detector)] =np.nanmedian(cube_detector)
-                        # print(np.nanmin(cube_detector))
-                        # if remap:
-                        # else:
-                        # cube_detector = self.Signal_el * cube_detector/ np.nanmax(cube_detector)
                         fitswrite(cube_detector,"/tmp/gal_simu.fits")
                         cube_detector = np.transpose(cube_detector, (1, 2, 0))
-                        # print(3, np.nanmin(cube_detector), np.nanmin(cube_detector))
+                    elif "cube CGM+IGM" in source:
+                        phys = True if source.split("-")[1]=="resampled_phys" else False
+                        name_ = "_resampled_phys.fits" if phys else "_resampled.fits"
+                        s1 = "galaxy_and_cgm_cube"
+                        s2 = "cube_01"
+                        cube_detector = convert_fits_cube("../data/Emission_cube/"+ s1 + ".fits","../data/Emission_cube/"+ s1 + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,phys=phys)                         
+                        cube_detector2 = convert_fits_cube("../data/Emission_cube/"+ s2 + ".fits","../data/Emission_cube/"+ s2 + name_, output_shape=(nsize2,100,100),wave_range_nm=(wave_min/10,wave_max/10), spatial_extent_arcsec=100*self.pixel_scale,redshift=Redshift,phys=phys)                         
+                        # cube_detector =  fits.open(cube1)[0].data
+                        cube_detector -= np.nanmedian(cube_detector)
+                        cube_detector[cube_detector<np.nanmedian(cube_detector)]= np.nanmedian(cube_detector)
+
+                        # cube_detector2 =  fits.open(cube2)[0].data
+                        cube_detector2 -= np.nanmedian(cube_detector2)
+                        cube_detector2[cube_detector2<np.nanmedian(cube_detector2)]= np.nanmedian(cube_detector2)
+
+                        fitswrite(1*cube_detector+1*cube_detector2,"/tmp/gal_simu.fits")
+                        cube_detector = np.transpose(1*cube_detector+1*cube_detector2, (1, 2, 0))
+
+
                     else:
                         cube_detector = create_fits_cube(cube_size=(size[1], size[1], n_wave), pixel_scale=self.pixel_scale, wave_range=(wave_min,wave_max),continuum_flux=np.ones(n_wave)*self.extra_background * int(self.exposure_time)/3600 ,continuum_fwhm=None, line_flux=self.Signal_el, line_center=self.wavelength, line_fwhm=self.Line_width, line_spatial_fwhm=self.Size_source,galaxy_shape=True, kpc_size=int(source.split(" ")[1]), redshift=self.Redshift,filament=True)
                         fitswrite(cube_detector,"/tmp/gal_me.fits")
