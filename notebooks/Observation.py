@@ -587,7 +587,10 @@ class ExposureTimeCalulator(widgets.HBox):
         args, _, _, locals_ = inspect.getargvalues(inspect.currentframe())
         self.Redshift=0
         for i in range(len(instruments)):
-            setattr(self, instruments["Charact."][i], instruments[instrument][i] ) if  isinstance(type(instruments[instrument][i]), (int, float, complex,np.float64))  else setattr(self, instruments["Charact."][i], float(instruments[instrument][i]) )#.replace("%","")
+            if hasattr(self, instruments["Charact."][i]):
+                pass
+            else:
+                setattr(self, instruments["Charact."][i], instruments[instrument][i] ) if  isinstance(type(instruments[instrument][i]), (int, float, complex,np.float64))  else setattr(self, instruments["Charact."][i], float(instruments[instrument][i]) )#.replace("%","")
         exposure_time=np.logspace(0,np.log10(time_max))
         self.instruments_dict = {name: {key: val for key, val in zip(instruments["Charact."][:], instruments[name][:]) if not isinstance(key, np.ma.core.MaskedConstant) and not isinstance(val, np.ma.core.MaskedConstant)} for name in instruments.colnames[3:]}
 
@@ -682,7 +685,7 @@ class ExposureTimeCalulator(widgets.HBox):
         self.Throughput = widgets.FloatSlider( min=0.01, max=1,value=self.Throughput,base=10, style =style, layout=Layout(width=width),description='Throughput',description_tooltip="Instrument throughput at effective wavelength (not accounting for detector quantum efficiency and atmospheric transmission)",continuous_update=c_update)
 
         self.database = widgets.Dropdown(options=["Online DB","Local DB"],value=database,description="", layout=Layout(width='90px'),description_tooltip="Instrument characteristics",continuous_update=c_update, style =dict(description_width='initial'))
-        self.interpolation = widgets.Dropdown(options=["None", 'gaussian', 'none', 'nearest', 'bilinear', 'bicubic', 'spline16','spline36', 'hanning', 'hamming', 'hermite', 'kaiser', 'quadric','catrom', 'bessel', 'mitchell', 'sinc', 'lanczos'],value="None",description="Interpolation", layout=Layout(width='350px'),description_tooltip="Interpolation method in the the imshow method",continuous_update=c_update, style =dict(description_width='initial'))
+        self.interpolation = widgets.Dropdown(options=["None", 'gaussian', 'none', 'nearest', 'bilinear', 'bicubic', 'spline16','spline36', 'hanning', 'hamming', 'hermite', 'kaiser', 'quadric','catrom', 'bessel', 'mitchell', 'sinc', 'lanczos'],value=(self.interpolation if hasattr(self, "interpolation") else "None"),description="Interpolation", layout=Layout(width='350px'),description_tooltip="Interpolation method in the the imshow method",continuous_update=c_update, style =dict(description_width='initial'))
 
 
         self.dependencies = widgets.SelectMultiple(options=['dispersion=10*wavelength/Spectral_resolution/2','pixel_scale=2.35*PSF_RMS_det/2', 'CIC_charge=EM_gain/2'],value=[],rows=2,description='Dep.',disabled=False)
@@ -697,18 +700,18 @@ class ExposureTimeCalulator(widgets.HBox):
 
 
         self.wavelength = widgets.FloatSlider( min=50, max=1000,value=self.wavelength,base=10, style =style, step=0.1, layout=Layout(width=width),description='Observed λ',description_tooltip="Oberved λ in Å (only used for conversions)",continuous_update=c_update)
-        self.Δλ = widgets.FloatSlider( min=-250, max=250,value=-10,base=10, style =style, layout=Layout(width='400px'),description='Δλ',description_tooltip="Distance to the emission line being analyzed in pixels",continuous_update=c_update)
-        self.Δx = widgets.FloatSlider( min=-50, max=50,value=0,base=10, style =style, layout=Layout(width='400px'),description='Δx',description_tooltip="Distance to the source being analyzed in pixels",continuous_update=c_update)
+        self.Δλ = widgets.FloatSlider( min=-250, max=250,value=(self.Δλ if hasattr(self, "Δλ") else 0),base=10, style =style, layout=Layout(width='400px'),description='Δλ',description_tooltip="Distance to the emission line being analyzed in pixels",continuous_update=c_update)
+        self.Δx = widgets.FloatSlider( min=-50, max=50,value=(self.Δx if hasattr(self, "Δx") else 0),base=10, style =style, layout=Layout(width='400px'),description='Δx',description_tooltip="Distance to the source being analyzed in pixels",continuous_update=c_update)
         self.Throughput_FWHM = widgets.FloatLogSlider( min=1, max=5,value=np.log10(self.Throughput_FWHM),base=10, style =style, layout=Layout(width='400px'),description='TH FWHM',description_tooltip="Instrument throughput FWHM in  Å. If an instrument-specific λ-dependent throughput is added to the repository, this csv file will be used.")#5.57e-18
         self.Redshift = widgets.FloatSlider( min=0.01, max=10,value=self.Redshift,base=10, step=0.01, style =style, layout=Layout(width='400px'),description='Redshift',description_tooltip="Redshift only considered to shift blackbody spectra or QSO/Star spectra. Flux will stay based on source observed surface brightness. Changes also the kpc size",continuous_update=c_update)
         # TODO verify that this stack is well taken into account into the CNR computation
-        self.lambda_stack = widgets.IntSlider( min=1, max=200,value=1, layout=Layout(width=width),description='λ Stack (pix)',step=0.1,description_tooltip="Number of spectral slices used to stack cube (spectral pix)",continuous_update=c_update)
+        self.lambda_stack = widgets.IntSlider( min=1, max=200,value=(self.lambda_stack if hasattr(self, "lambda_stack") else 1), layout=Layout(width=width),description='λ Stack (pix)',step=0.1,description_tooltip="Number of spectral slices used to stack cube (spectral pix)",continuous_update=c_update)
 
         self.Spectral_resolution = widgets.IntSlider( min=90, max=10000,value=self.Spectral_resolution,base=10, style =style, layout=Layout(width=width),description='R (λ/dλ) ',description_tooltip="Instrument spectral resolution λ/dλ",continuous_update=c_update)
         # self.Slitwidth = widgets.FloatSlider( min=0.1, max=600,value=self.Slitwidth,base=10, style =style, layout=Layout(width=width),description='Slit ["]',description_tooltip="Width of the slit [''] ")
         self.SlitDims = widgets.FloatRangeSlider( min=0.001, max=600,value=(self.Slitwidth,self.Slitlength),base=10, step=0.001, style =style, layout=Layout(width=width),description='Slit dims["]',description_tooltip="Width and length of the slit [''] (put same value for fibers) ")
         
-        self.minmax = widgets.FloatRangeSlider( min=0, max=1,value=(0,1),base=10, step=0.001, style =style, layout=Layout(width=width),description='Vmin/Vmax',description_tooltip="Color map min/max",continuous_update=c_update)
+        self.minmax = widgets.FloatRangeSlider( min=0, max=1,value=((self.min if hasattr(self, "min") else 0),(self.max if hasattr(self, "max") else 1)),base=10, step=0.001, style =style, layout=Layout(width=width),description='Vmin/Vmax',description_tooltip="Color map min/max",continuous_update=c_update)
         
         self.dispersion = widgets.FloatSlider( min=0.01, max=5,value=self.dispersion,base=10, style =style, step=0.001, readout_format='.2f', layout=Layout(width=width),description='Dispersion',description_tooltip="Dispersion at the detector Å/pix ",continuous_update=c_update)
 
@@ -719,13 +722,13 @@ class ExposureTimeCalulator(widgets.HBox):
         self.backbodies = ["↳ Rest-frame: Blackbody " + bb for bb in ["5900 K (09V)","Blackbody 1500 K (BOV)","9000 K (B3V)","480 K (AOV)","8810 K (A2V)","8160 K (A5V)","7020 K (FOV)","6750 K (F2V)","6530 K (F5V)","930 K (GOV)","5830 K (G2V)","5560 K (G5V)","240 K (KOV)","5010 K (K2V)","4560 K (K4V)","4340 K (K5V)","4040 K (K7V)","3800 K (MOV)","3530 K (M2V)","3380 K (M3V)","3180 K (M4V)","3030 K (M5V)","2850 K (M6V)"] ]
         self.spectra_options = ["Observed-frame: Baseline Spectra", "↳ Rest-frame: Baseline Lyα (1216Å)", "↳ Rest-frame: Baseline CIV (1549Å)", "↳ Rest-frame: Baseline OVI (1033Å)", "↳ Rest-frame: Baseline CIII (1908Å)",]  + self.gals + self.QSOs + self.backbodies+ ["↳ Observed-frame: UVSpectra 1538p477 NUV~16.6","↳ Observed-frame: UVSpectra 1821p643 NUV~14",'↳ Observed-frame: UVSpectra 0044p030 NUV~16.5',"↳ Observed-frame: UVSpectra mrk509","↳ Observed-frame: UVSpectra 2344p092","↳ Observed-frame: UVSpectra 1637p574","↳ Observed-frame: UVSpectra 1115p080","↳ Observed-frame: UVSpectra 0414m060","↳ Observed-frame: UVSpectra 0115p027","↳ Observed-frame: UVSpectra 2251p113","↳ Observed-frame: UVSpectra 2201p315","↳ Observed-frame: UVSpectra 1928p738","↳ Observed-frame: UVSpectra 1700p518","------SIMULATED CUBES------","↳ cube 10 kpc galaxy + Lya em CGM+Filament","↳ cube 30 kpc galaxy + Lya em CGM+Filament","↳ cube 100 kpc galaxy + Lya em CGM+Filament","↳ lya_cube_merged_with_artificial_source_CU_1pc-resampled_phys","↳ lya_cube_merged_with_artificial_source_CU_1pc-resampled","↳ cube_01-resampled_phys","↳ cube_01-resampled","↳ galaxy_disk_cube-resampled_phys","↳ galaxy_disk_cube-resampled","↳ galaxy_and_cgm_cube-resampled_phys","↳ galaxy_and_cgm_cube-resampled","↳ CGM_cube-resampled_phys","↳ CGM_cube-resampled","↳ cube CGM+IGM-resampled_phys","↳ cube CGM+IGM-resampled"]#,"lya_cube_merged_with_artificial_source_CU_1pc_map","lya_cube_merged_with_artificial_source_CU_1pc_resampled"] 
         # self.spectra     = widgets.Dropdown(options=self.spectra_options, layout=Layout(width='350px'),description='Spectra',value="galaxy_and_cgm_cube-resampled_phys",continuous_update=c_update)#Observed-frame: Baseline Spectra   "lya_cube_merged_with_artificial_source_CU_1pc-remap"
-        self.spectra     = widgets.Dropdown(options=self.spectra_options, layout=Layout(width='350px'),description='Spectra',value="Observed-frame: Baseline Spectra",continuous_update=c_update)#Observed-frame: Baseline Spectra   "lya_cube_merged_with_artificial_source_CU_1pc-remap"
+        self.spectra     = widgets.Dropdown(options=self.spectra_options, layout=Layout(width='350px'),description='Spectra',value=(self.spectra if hasattr(self, "spectra") else "Observed-frame: Baseline Spectra"),continuous_update=c_update)#Observed-frame: Baseline Spectra   "lya_cube_merged_with_artificial_source_CU_1pc-remap"
         self.units       = widgets.Dropdown(options=["ADU/frame","e-/frame","photons/frame","e-/hour","photons/hour","e-/second","photons/second"], layout=Layout(width='350px'),description='Units',value="ADU/frame")# TODO add ergs/cm2/... "amplified e-/frame","amplified e-/hour",
 
         # widgets.Dropdown(options=["S2: 0.053 ADU/e-, FW=5.6 KADU","S2_hdr: 0.97 ADU/e-, FW=52 KADU","1: 0.02 ADU/e-, FW=2.1 KADU","1': 0.4 ADU/e-, FW=40 KADU","2: 0.04 ADU/e-, FW=4.7 KADU","2018: 0.5 ADU/e-, FW=56 KADU","2022: 0.2 ADU/e-, FW=22 KADU","2023_noOS: 0.04 ADU/e-, FW=39 KADU"], layout=Layout(width='350px'),description='RO seq',value="S2_hdr: 0.97 ADU/e-, FW=52 KADU",continuous_update=c_update)
-        self.QElambda = widgets.Checkbox(value=True,description='Throughput(λ)',disabled=False,tooltip="Check this box to apply λ QE dependancy",layout=Layout(width="217px"))
-        self.atmlambda = widgets.Checkbox(value=True,description='atm(λ)',disabled=False,tooltip="Check this box to apply λ atm transmission dependancy",layout=Layout(width="217px"))
-        self.sky_lines = widgets.Checkbox(value=True,description='Sky lines',disabled=False,tooltip="Check this box to add sky emission lines",layout=Layout(width="217px"))
+        self.QElambda = widgets.Checkbox(value=(self.QElambda if hasattr(self, "ΔQElambdaλ") else True),description='Throughput(λ)',disabled=False,tooltip="Check this box to apply λ QE dependancy",layout=Layout(width="217px"))
+        self.atmlambda = widgets.Checkbox(value=(self.atmlambda if hasattr(self, "atmlambda") else True),description='atm(λ)',disabled=False,tooltip="Check this box to apply λ atm transmission dependancy",layout=Layout(width="217px"))
+        self.sky_lines = widgets.Checkbox(value=(self.sky_lines if hasattr(self, "sky_lines") else True),description='Sky lines',disabled=False,tooltip="Check this box to add sky emission lines",layout=Layout(width="217px"))
         self.test = widgets.Checkbox(value=True,description='F',disabled=False,tooltip="Check this box to use the method where we compute all flux and then divide by pixels or compute directly the flux per pixel",layout=Layout(width="100px"))
         # self.test.layout.visibility = 'hidden'  
 
@@ -789,13 +792,15 @@ class ExposureTimeCalulator(widgets.HBox):
 
         def save_data(_):
             self.f = lambda x: self.wavelength.value + (self.dispersion.value/10) * (x - n1/2)
-            fitswrite(self.ifs_cube.T,"/tmp/ifs_cube.fits")
-            fitswrite(np.transpose(self.ifs_cube_stack,(1,2,0)),"/tmp/ifs_cube_stack.fits")
-            # fitswrite(self.imaADU_without_source,"/tmp/imaADU_without_source.fits")
-            # fitswrite(self.imaADU_source,"/tmp/imaADU_source.fits")
-            # fitswrite(self.imaADU_stack_without_source,"/tmp/imaADU_stack_without_source.fits")
-            # fitswrite(self.imaADU_stack_only_source,"/tmp/imaADU_stack_only_source.fits")
-            np.savetxt("/tmp/spectra.csv", np.asarray([ self.f(np.arange(n1)), self.ifs_spectra[0].get_ydata(), self.ifs_spectra_stack[0].get_ydata(), self.ifs_spectra_background[0].get_ydata(), self.ifs_spectra_background_stack[0].get_ydata()  ]), delimiter=",",header="wavelength,ifs_spectra, ifs_spectra_stack, ifs_spectra_background, ifs_spectra_background_stack")
+            # fitswrite(self.ifs_cube,"/tmp/ifs_cube.fits")                
+            # fitswrite(np.transpose(self.ifs_cube_stack,(2,1,0)),"/tmp/ifs_cube_stack.fits")
+
+
+            fitswrite(np.transpose(self.ifs_cube,(1,0,2)),"/tmp/ifs_cube.fits")                
+            fitswrite(np.transpose(self.ifs_cube_stack,(1,0,2)),"/tmp/ifs_cube_stack.fits")
+
+
+            np.savetxt("/tmp/spectra.csv", np.asarray([ self.f(np.arange(n1)), self.ifs_spectra[0].get_ydata(), self.ifs_spectra_stack[0].get_ydata() ]), delimiter=",",header="wavelength,ifs_spectra, ifs_spectra_stac")
             return
         self.save_data_button.on_click(save_data)
 
@@ -1251,10 +1256,6 @@ class ExposureTimeCalulator(widgets.HBox):
 
         with self.out1:
 
-
-
-            # print(counting_mode,Sky,acquisition_time,Signal,EM_gain,RN,CIC_charge,Dark_current,exposure,smearing,temperature,follow_temp,fwhm,QE,extra_background, log,xlog,SNR_res,    Collecting_area, pixel_scale, Throughput, Spectral_resolution, SlitDims, dispersion,    Size_source,Line_width,wavelength,Δλ,Δx, Atmosphere, pixel_size,cosmic_ray_loss_per_sec,lambda_stack, change,     spectra,units,Throughput_FWHM, QElambda, atmlambda, fraction_lya,sky_lines, Redshift, IFS)
-            # self.yscale="symlog" if log else "linear"
             self.yscale="log" if log else "linear"
 
             if self.change.value:
@@ -3201,7 +3202,7 @@ class Observation:
         if os.path.exists("../data/Instruments/%s/Throughput.csv"%(self.instrument.upper().replace(" ","_"))):
             QE = Table.read("../data/Instruments/%s/Throughput.csv"%(self.instrument.upper().replace(" ","_")))
             QE = interp1d(QE[QE.colnames[0]]*10,QE[QE.colnames[1]])#
-            self.Throughput_curve = QE(wavelengths)/np.nanmax(QE(wavelengths))  if QElambda else Gaussian1D.evaluate(wavelengths,  1,  self.wavelength*10, Throughput_FWHM )
+            self.Throughput_curve = QE(wavelengths)/np.nanmax(QE(wavelengths))  if QElambda else Gaussian1D.evaluate(wavelengths,  1,  self.wavelength*10, 10*Throughput_FWHM )
         
         else:
             self.Throughput_curve = Gaussian1D.evaluate(wavelengths,  1,  self.wavelength*10, Throughput_FWHM )  if QElambda else 1  #self.QE
@@ -3262,6 +3263,8 @@ class Observation:
     
                     
                     spectra =  flux *Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2 + (w_nm-self.wavelength)*10/self.dispersion, PSF_λ)   / Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2, self.PSF_lambda_pix**2/(PSF_λ**2 + self.PSF_lambda_pix**2)).sum()
+                    # spectra =  flux *Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2 + (w_nm-self.wavelength)*10/self.dispersion, np.sqrt(PSF_λ**2+self.Line_width**2))   / Gaussian1D.evaluate(np.arange(size[0]),  1,  size[0]/2,  np.sqrt(PSF_λ**2+self.Line_width**2) ).sum()
+
                     # print(w_nm,self.wavelength,self.dispersion, size[0]/2 + (w_nm-self.wavelength)*10*self.dispersion,np.min(spectra),np.max(spectra))
                     # if spectra.sum()>0:
                     #     spectra *= flux/spectra.sum()
