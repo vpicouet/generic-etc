@@ -525,6 +525,7 @@ def load_instruments(sheet_id= "1Ox0uxEm2TfgzYA6ivkTpU4xrmN5vO5kmnUPdCSt73uU", s
         try:
             instruments =   Table.from_pandas(pd.read_csv(url)).filled(np.nan)
             database = "Online DB"
+            # instruments.save("weifubewuon.csc")
         except Exception as e:
             print(e)
             instruments = Table.from_pandas(pd.read_excel("../instruments.xlsx"))
@@ -577,7 +578,7 @@ def mostFrequent(arr):
 
 class ExposureTimeCalulator(widgets.HBox):
     @initializer
-    def __init__(self, instruments=None,database=None, instrument="FIREBall-2 2025",x_axis='exposure_time', time_max = 2005,SNR_res="per Res elem" ,spectrograph=True, **kwargs):#, Atmosphere=0.5, Throughput=0.13*0.9, follow_temp=False, acquisition_time=1, Sky=4, Signal=24, EM_gain=1400,RN=109,CIC_charge=0.005, Dark_current=0.08,readout_time=1.5,counting_mode=False,smearing=0.7,extra_background=0,temperature=-100,PSF_RMS_mask=2.5,PSF_RMS_det = 3.5,QE=0.45,cosmic_ray_loss_per_sec=0.005,
+    def __init__(self, instruments=None,database=None, instrument="FIREBall-2 2025",x_axis='exposure_time', time_max = 3005,SNR_res="per Res elem" ,spectrograph=True, **kwargs):#, Atmosphere=0.5, Throughput=0.13*0.9, follow_temp=False, acquisition_time=1, Sky=4, Signal=24, EM_gain=1400,RN=109,CIC_charge=0.005, Dark_current=0.08,readout_time=1.5,counting_mode=False,smearing=0.7,extra_background=0,temperature=-100,PSF_RMS_mask=2.5,PSF_RMS_det = 3.5,QE=0.45,cosmic_ray_loss_per_sec=0.005,
         """
         Generate an ETC app containing multiple widghet that allow to change the ETC parameters
         as well as plotting the result (e- and noise budget, limiting flux, SNR) in terms of the different parameters.
@@ -664,8 +665,9 @@ class ExposureTimeCalulator(widgets.HBox):
        
         self.Signal = widgets.FloatLogSlider(min=-21, max=-9 ,value=self.Signal,description='Source brightness', style =dict(description_width='initial'), layout=Layout(width=width),description_tooltip="Flux of the diffuse source in ergs/cm2/s/arcsec2/Å.",continuous_update=c_update)
         self.Sky = widgets.FloatLogSlider( min=-23, max=-15,value=self.Sky,base=10, style =dict(description_width='initial'), layout=Layout(width=width),description='Sky    brightness',description_tooltip="Level of sky background illumination (zodiacal and galactic) in ergs/cm2/s/arcsec2/Å ",continuous_update=c_update)
+        # self.acquisition_time = widgets.FloatLogSlider( min=-1, max=3,value=self.acquisition_time,style =style ,base=10,layout=Layout(width=width),description='Taq (h)',description_tooltip="Total acquisition time [hours]",continuous_update=c_update)
         self.acquisition_time = widgets.FloatLogSlider( min=-1, max=3,value=self.acquisition_time,style =style ,base=10,layout=Layout(width=width),description='Taq (h)',description_tooltip="Total acquisition time [hours]",continuous_update=c_update)
-        self.exposure = widgets.FloatRangeSlider( min=0, max=time_max,value=(self.readout_time,self.time),style = style, layout=Layout(width=width),description='Rd/Exp time',step=0.1,readout_format='.0f',description_tooltip="Readout time and exposure time [seconds]",continuous_update=c_update)
+        self.exposure = widgets.FloatRangeSlider( min=0, max=np.max([time_max,self.time]),value=(self.readout_time,self.time),style = style, layout=Layout(width=width),description='Rd/Exp time',step=0.1,readout_format='.0f',description_tooltip="Readout time and exposure time [seconds]",continuous_update=c_update)
 
         self.fwhm = widgets.FloatRangeSlider( min=0.01, max=6,value=(self.PSF_RMS_mask,self.PSF_RMS_det),style = style, layout=Layout(width=width),description='Mask/det σ',step=0.01,readout_format='.2f',description_tooltip="Spatial resolution in arcseconds respectively at the mask and detector level. To be multiplied by 2.35 to have the FWHM.",continuous_update=c_update)
         self.RN = widgets.FloatSlider( min=0.01, max=120,value=self.RN, style = style, step=0.1, layout=Layout(width=width),description='Read noise',description_tooltip="Detector readout noise in electrons/pixel",continuous_update=c_update)
@@ -1347,7 +1349,7 @@ class ExposureTimeCalulator(widgets.HBox):
                     elif x_axis == 'EM_gain':
                         EM_gain=space(self.EM_gain.min,self.EM_gain.max)
                     elif x_axis == 'acquisition_time':
-                        acquisition_time=space(self.acquisition_time.min,self.acquisition_time.max)
+                        acquisition_time=space(10**self.acquisition_time.min,10**self.acquisition_time.max)
                     elif x_axis == 'RN':
                         RN=space(self.RN.min,self.RN.max)
                     elif x_axis == 'CIC_charge':
@@ -1729,7 +1731,7 @@ class ExposureTimeCalulator(widgets.HBox):
                     #TODO add that if dispersion is an array we must 
                     disp = dispersion[arg] if type(dispersion)==np.ndarray else dispersion
 
-                    title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i '%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value, 100*100*self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  pixel_scale, 2.35*self.PSF_RMS_det/pixel_scale, 10*self.wavelength.value/self.Spectral_resolution.value/disp, self.number_pixels_used    )
+                    title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i '%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value, 100*100*self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  self.pixel_scale.value, 2.35*self.PSF_RMS_det/self.pixel_scale.value, 10*self.wavelength.value/self.Spectral_resolution.value/disp, self.number_pixels_used    )
                     # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$'%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0])
                     self.ax0.set_title(title,y=0.97,fontsize=10)
 
@@ -2135,7 +2137,8 @@ class ExposureTimeCalulator(widgets.HBox):
             #HACK this was added here just because there is another issue with imagers
             self.change.value=False
             # print(1.2)
-            self.spectro = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
+            # print(self.instruments_dict[self.instrument.value]["dispersion"],type(self.instruments_dict[self.instrument.value]["dispersion"]))
+            self.spectro = False if np.isnan(float(self.instruments_dict[self.instrument.value]["dispersion"])) else True
             # print(1.3)
             self.spectrograph.value = self.spectro
             # print(1.4)
@@ -2166,9 +2169,8 @@ class ExposureTimeCalulator(widgets.HBox):
             # self.spectra.value ="10 kpc spiral galaxy"
             keys = list(self.instruments_dict[instrument].keys())
             keys.remove("Signal")
-            print(5)
             for key in keys:
-                if ~np.isnan(self.instruments_dict[instrument][key]):
+                if ~np.isnan(float(self.instruments_dict[instrument][key])):
                     # print(key, self.instruments_dict[instrument][key])
                     # rsetattr(self, '%s.value'%(key), self.instruments_dict[instrument][key]) 
                     try:
@@ -2410,46 +2412,46 @@ class Observation:
             self.factor_CU2el_sky = self.factor_CU2el_sky_tot
 
             # working almost for dispersion! But actually we also need to have an optimal with pixel_scale!!!
-            # self.factor_CU2el = self.effective_area * self.arcsec2str  * np.minimum(self.Slitwidth, self.Size_source)  * np.minimum( self.dispersion, np.minimum(self.Line_width, self.Bandwidth)/2.35) * self.pixel_scale
-            # # il faut ici que je rajoute une line width
-            # # quand la ligne width devient importante 
-            # sky_spectral_coverage =  np.minimum( self.dispersion, np.minimum(self.Line_width, self.Bandwidth)/2.35)#np.minimum(self.dispersion, self.Bandwidth)
-            # self.factor_CU2el_sky = self.effective_area * self.arcsec2str  * self.Slitwidth * sky_spectral_coverage * self.pixel_scale
+            self.factor_CU2el = self.effective_area * self.arcsec2str  * np.minimum(self.Slitwidth, self.Size_source)  * np.minimum( self.dispersion, np.minimum(self.Line_width, self.Bandwidth)/2.35) * self.pixel_scale
+            # il faut ici que je rajoute une line width
+            # quand la ligne width devient importante 
+            sky_spectral_coverage =  np.minimum( self.dispersion, np.minimum(self.Line_width, self.Bandwidth)/2.35)#np.minimum(self.dispersion, self.Bandwidth)
+            self.factor_CU2el_sky = self.effective_area * self.arcsec2str  * self.Slitwidth * sky_spectral_coverage * self.pixel_scale
 
 
             # working for dispersion but adding pixels_scale and slit_width!!!
-            # source_spatial_arcsec = self.source_size_arcsec_after_slit#
-            # # source_spatial_arcsec = np.minimum(self.Slitwidth, self.Size_source)
-            # source_spectral_angstrom = np.minimum(self.Line_width, self.Bandwidth)
-            # spatial_per_pix = source_spatial_arcsec / self.pixel_scale
-            # spectral_per_pix = source_spectral_angstrom / self.dispersion
-            # # Combine spatiale + spectrale en quadrature :
-            # effective_pix_size = np.sqrt(spatial_per_pix**2 + spectral_per_pix**2)
-            # # Puis :
-            # self.factor_CU2el_average = self.effective_area * self.arcsec2str * source_spatial_arcsec * source_spectral_angstrom / self.pixels_total_source #effective_pix_size
-            # sky_spatial_arcsec = self.Slitwidth
-            # sky_spatial_arcsec = self.slit_size_arcsec_after_slit
-            # sky_spectral_angstrom =  self.Bandwidth  #/2.35            #np.minimum(self.Line_width, self.Bandwidth)
-            # sky_spectral_angstrom =  np.minimum(self.Line_width, self.Bandwidth)
-            # spatial_per_pix_sky = sky_spatial_arcsec / self.pixel_scale
-            # spectral_per_pix_sky = sky_spectral_angstrom / self.dispersion
-            # # Combine spatiale + spectrale en quadrature :
-            # effective_pix_size_sky = np.sqrt(spatial_per_pix_sky**2 + spectral_per_pix_sky**2)
-            # # Puis :
-            # self.factor_CU2el_sky_average = self.effective_area * self.arcsec2str * sky_spatial_arcsec * sky_spectral_angstrom / self.pixels_total_source #effective_pix_size_sky
+            source_spatial_arcsec = self.source_size_arcsec_after_slit#
+            source_spatial_arcsec = np.minimum(self.Slitwidth, self.Size_source)
+            source_spectral_angstrom = np.minimum(self.Line_width, self.Bandwidth)
+            spatial_per_pix = source_spatial_arcsec / self.pixel_scale
+            spectral_per_pix = source_spectral_angstrom / self.dispersion
+            # Combine spatiale + spectrale en quadrature :
+            effective_pix_size = np.sqrt(spatial_per_pix**2 + spectral_per_pix**2)
+            # Puis :
+            self.factor_CU2el_average = self.effective_area * self.arcsec2str * source_spatial_arcsec * source_spectral_angstrom / self.pixels_total_source #effective_pix_size
+            sky_spatial_arcsec = self.Slitwidth
+            sky_spatial_arcsec = self.slit_size_arcsec_after_slit
+            sky_spectral_angstrom =  self.Bandwidth  #/2.35            #np.minimum(self.Line_width, self.Bandwidth)
+            sky_spectral_angstrom =  np.minimum(self.Line_width, self.Bandwidth)
+            spatial_per_pix_sky = sky_spatial_arcsec / self.pixel_scale
+            spectral_per_pix_sky = sky_spectral_angstrom / self.dispersion
+            # Combine spatiale + spectrale en quadrature :
+            effective_pix_size_sky = np.sqrt(spatial_per_pix_sky**2 + spectral_per_pix_sky**2)
+            # Puis :
+            self.factor_CU2el_sky_average = self.effective_area * self.arcsec2str * sky_spatial_arcsec * sky_spectral_angstrom / self.pixels_total_source #effective_pix_size_sky
                         
-            # difference = np.abs(self.factor_CU2el_tot - self.factor_CU2el_average)
-            # ratio = difference / np.abs(self.factor_CU2el_tot)
-            # # print(ratio, difference)
-            # # if (difference > 0.1) | (ratio > 0.1):
-            # #     print("Warning: difference or ratio between the two methods to compute the factor is too high: ", difference, ratio)
-            # #     print("factor_CU2el_tot", self.factor_CU2el_tot, "factor_CU2el_average", self.factor_CU2el_average)            
-            # if  self.test:
-            #     self.factor_CU2el = self.factor_CU2el_tot
-            #     self.factor_CU2el_sky = self.factor_CU2el_sky_tot
-            # else:
-            #     self.factor_CU2el = self.factor_CU2el_average
-            #     self.factor_CU2el_sky = self.factor_CU2el_sky_average
+            difference = np.abs(self.factor_CU2el_tot - self.factor_CU2el_average)
+            ratio = difference / np.abs(self.factor_CU2el_tot)
+            # print(ratio, difference)
+            # if (difference > 0.1) | (ratio > 0.1):
+            #     print("Warning: difference or ratio between the two methods to compute the factor is too high: ", difference, ratio)
+            #     print("factor_CU2el_tot", self.factor_CU2el_tot, "factor_CU2el_average", self.factor_CU2el_average)            
+            if  self.test:
+                self.factor_CU2el = self.factor_CU2el_tot
+                self.factor_CU2el_sky = self.factor_CU2el_sky_tot
+            else:
+                self.factor_CU2el = self.factor_CU2el_average
+                self.factor_CU2el_sky = self.factor_CU2el_sky_average
 
         else: 
             # TODO for imager that already have some throughput, integrate over the throughput curve.
@@ -3127,7 +3129,8 @@ class Observation:
             coords = (gains, rons, fluxes, smearings,noise)
             point = (EM_gain, RN, flux, self.smearing,noise_value)
         else:
-            print(n,EM_gain, RN, flux, self.smearing,noise_value)
+            pass
+            # print(n,EM_gain, RN, flux, self.smearing,noise_value)
             
         if ~np.isscalar(noise_value) |  ~np.isscalar(self.smearing) | ~np.isscalar(EM_gain) | ~np.isscalar(RN):
             point = np.repeat(np.zeros((4,1)), self.len_xaxis, axis=1).T
