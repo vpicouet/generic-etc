@@ -1731,7 +1731,32 @@ class ExposureTimeCalulator(widgets.HBox):
                     #TODO add that if dispersion is an array we must 
                     disp = dispersion[arg] if type(dispersion)==np.ndarray else dispersion
 
-                    title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i '%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value, 100*100*self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  self.pixel_scale.value, 2.35*self.PSF_RMS_det/self.pixel_scale.value, 10*self.wavelength.value/self.Spectral_resolution.value/disp, self.number_pixels_used    )
+                    title = (
+                        "%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i, LU/A = %i "
+                        % (
+                            self.instrument.value,
+                            self.FOV_size,
+                            self.wavelength.value,
+                            100
+                            * self.Throughput.value
+                            * self.QE.value
+                            * self.Atmosphere.value,
+                            100
+                            * 100
+                            * self.Throughput.value
+                            * self.QE.value
+                            * self.Atmosphere.value
+                            * self.Collecting_area.value,
+                            self.pixel_scale.value,
+                            2.35 * self.PSF_RMS_det / self.pixel_scale.value,
+                            10
+                            * self.wavelength.value
+                            / self.Spectral_resolution.value
+                            / disp,
+                            self.number_pixels_used,
+                            convert_ergs2LU(self.Signal.value, self.wavelength.value),
+                        )
+                    )
                     # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$'%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0])
                     self.ax0.set_title(title,y=0.97,fontsize=10)
 
@@ -2202,7 +2227,7 @@ class ExposureTimeCalulator(widgets.HBox):
             self.smearing.layout.visibility = 'visible' if (("FIREBall-2" in instrument)|("SCWI" in instrument)) & (self.counting_mode.value)    else 'hidden'
             self.temperature.layout.visibility = 'visible' if ("FIREBall-2" in instrument) &  (self.follow_temp.value)  else 'hidden'
             # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$, PSF_{x,λ}=%0.1,%0.1pix '%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0],    )
-            title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i '%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value,100*100* self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  self.pixel_scale.value, 2.35*self.PSF_RMS_det/self.pixel_scale.value, 10*self.wavelength.value/self.Spectral_resolution.value/self.dispersion.value, self.number_pixels_used    )
+            title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i, LU/A = %i'%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value,100*100* self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  self.pixel_scale.value, 2.35*self.PSF_RMS_det/self.pixel_scale.value, 10*self.wavelength.value/self.Spectral_resolution.value/self.dispersion.value, self.number_pixels_used, convert_ergs2LU(self.Signal)    )
             # title = 'Instrument=%s, FOV=%0.1famin$^2$, λ=%inm, Throughput=%i%%, Atm=%i%%, Platescale=%.1f, area=%0.1fm$^2$'%(instrument,self.instruments[instrument][self.instruments["Charact."]=="FOV_size"][0], self.instruments[instrument][self.instruments["Charact."]=="wavelength"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Throughput"][0], 100*self.instruments[instrument][self.instruments["Charact."]=="Atmosphere"][0], self.instruments[instrument][self.instruments["Charact."]=="pixel_scale"][0], self.instruments[instrument][self.instruments["Charact."]=="Collecting_area"][0])
             self.ax0.set_title(title,y=0.97,fontsize=10)
             # print(8)
