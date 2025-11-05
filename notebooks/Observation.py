@@ -2388,7 +2388,7 @@ class Observation:
         # if self.smearing>0:
         # self.Signal *= 1 - np.exp(-1/(self.smearing+1e-15)) - np.exp(-2/(self.smearing+1e-15))  - np.exp(-3/(self.smearing+1e-15))
         
-        # @mat do you think that's right?
+        # @mat do you think that's right? 
         self.PSF_lambda_pix = 10*self.wavelength / self.Spectral_resolution / self.dispersion
         fwhm_sigma_ratio =2.35#1.0 # 2.355
         if self.spectro:
@@ -2475,7 +2475,7 @@ class Observation:
         #####################################
         # Convert sky background to LU and then to electrons
         #####################################
-        # @mat do you think that's right?
+        # @mat do you think that's right?  
         if self.spectro: # previously was multiplying by self.nfibers *
             # mat's solution provides a local optimum in dispersion that I don't get with my solution!!!
             self.factor_CU2el_tot =     1*self.effective_area * self.arcsec2str * np.minimum(self.Line_width,self.Bandwidth) *  self.source_size_arcsec_after_slit  / self.pixels_total_source  
