@@ -3,6 +3,11 @@ instruments.csv
 
 .DS_Store
 
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
 data/Emission_cube/lya_cube_merged_with_artificial_source_CU_1pc.fits
 
 data/Emission_cube/
