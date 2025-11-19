@@ -112,7 +112,28 @@ Si l'hypothèse est correcte, alors en renormalisant les inputs, tout devrait ma
 python test_sky_renormalization.py
 ```
 
-Si ça fonctionne → **Le calcul du SNR est correct, c'est juste une question de convention !**
+### Ce que fait le test
+
+**PARTIE 1: Calcul manuel**
+- Reproduit le calcul de Observation.py ligne par ligne
+- Calcule `source_size_arcsec_after_slit` et `slit_size_arcsec_after_slit`
+- Calcule `factor_CU2el_tot` et `factor_CU2el_sky_tot`
+- Compare brut vs Astropy
+- Compare avec correction `× pixels_total_source`
+- **Teste la renormalisation** : `Signal_renorm = Signal / (area_ratio × spectral_ratio) × npix`
+
+**PARTIE 2: Test avec Observation.py**
+- Crée des observations réelles
+- Renormalise les inputs
+- Vérifie que les outputs matchent
+
+### Résultats attendus
+
+Si tout match après renormalisation → **Le calcul du SNR est correct !**
+
+Les ratios doivent être ~1.0 (± 15%) :
+- `Signal_renorm_final / signal_astropy ≈ 1.0`
+- `sky_renorm_final / sky_astropy ≈ 1.0`
 
 ## Quelle convention utiliser ?
 
