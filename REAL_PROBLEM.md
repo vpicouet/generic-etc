@@ -26,6 +26,19 @@ python test_sky_renormalization.py
 
 **Le ratio reste constant pour toutes les variations** → cohérence parfaite ✓
 
+#### Variations testées
+
+| Paramètre | Facteurs testés | Ratio | Variation |
+|-----------|-----------------|-------|-----------|
+| **Exposure time** | 100s à 5000s | 0.9993 | Constant |
+| **Sky background** | 0.1x à 5.0x | 0.996 - 0.999 | Très faible |
+| **Dark current** | 0.1x à 10x | 0.9993 | Constant |
+| **Signal flux** | 0.5x à 10x | 0.999 - 0.999 | Très faible |
+
+**Statistiques finales** :
+- Ratio moyen : **0.9992**
+- Écart-type : **0.0007** (excellent!)
+
 ### Code du test
 
 ```python
