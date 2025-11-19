@@ -441,13 +441,167 @@ def test_sky_renormalization():
         import traceback
         traceback.print_exc()
 
-if __name__ == "__main__":
-    print("\n" + "="*80)
-    print("PARTIE 1: CALCUL MANUEL")
-    print("="*80)
-    results_manual = compute_manual_calculation()
+def simple_snr_comparison():
+    """
+    Test simple : comparer directement les SNR en injectant les valeurs de Generic ETC dans Astropy
+    """
+    import numpy as np
+    from Observation import Observation, load_instruments
+    from astropy.stats import signal_to_noise_oir_ccd
 
-    print("\n\n" + "="*80)
-    print("PARTIE 2: TEST AVEC OBSERVATION.PY")
+    instruments, database = load_instruments()
+    instrument_name = "GALEX FUV"
+
+    params = {}
+    for i, charact in enumerate(instruments['Charact.']):
+        if charact and not isinstance(charact, np.ma.core.MaskedConstant):
+            value = instruments[instrument_name][i]
+            if not isinstance(value, np.ma.core.MaskedConstant):
+                params[charact] = value
+
     print("="*80)
-    test_sky_renormalization()
+    print("TEST SIMPLE : Comparaison SNR")
+    print("="*80)
+
+    t_exp = 1000.0
+
+    # Generic ETC
+    obs = Observation(
+        instruments=instruments, instrument=instrument_name,
+        exposure_time=t_exp, SNR_res="per pix", IFS=False, test=True
+    )
+
+    print(f"\nGeneric ETC:")
+    print(f"  Signal_el: {obs.Signal_el[obs.i]:.6e} e⁻")
+    print(f"  sky: {obs.sky[obs.i]:.6e} e⁻")
+    print(f"  Dark_current_f: {obs.Dark_current_f[obs.i]:.6e} e⁻")
+    print(f"  number_pixels_used: {obs.number_pixels_used}")
+    print(f"  pixels_total_source: {obs.pixels_total_source}")
+    print(f"  SNR: {obs.SNR[obs.i]:.6e}")
+
+    # Convertir en taux pour Astropy (e⁻ → e⁻/s)
+    source_eps_generic = obs.Signal_el[obs.i] / t_exp
+    sky_eps_generic = obs.sky[obs.i] / t_exp
+    dark_eps_generic = obs.Dark_current_f[obs.i] / t_exp
+
+    print(f"\nTaux (Generic ETC):")
+    print(f"  source_eps: {source_eps_generic:.6e} e⁻/s")
+    print(f"  sky_eps: {sky_eps_generic:.6e} e⁻/s")
+    print(f"  dark_eps: {dark_eps_generic:.6e} e⁻/s")
+
+    # Astropy avec npix=1 (comme Generic qui a number_pixels_used=1 en mode "per pix")
+    snr_astropy = signal_to_noise_oir_ccd(
+        t=t_exp,
+        source_eps=source_eps_generic,
+        sky_eps=sky_eps_generic,
+        dark_eps=dark_eps_generic,
+        rd=params['RN'],
+        npix=int(obs.number_pixels_used),
+        gain=1.0
+    )
+
+    print(f"\nAstropy (avec taux Generic):")
+    print(f"  SNR: {snr_astropy:.6e}")
+
+    print(f"\n{'='*80}")
+    print(f"COMPARAISON SNR")
+    print(f"{'='*80}")
+    print(f"  Generic: {obs.SNR[obs.i]:.6e}")
+    print(f"  Astropy: {snr_astropy:.6e}")
+    print(f"  Ratio: {obs.SNR[obs.i]/snr_astropy:.4f}")
+
+    if abs(obs.SNR[obs.i]/snr_astropy - 1) < 0.15:
+        print(f"\n✓ SNR MATCH !")
+    else:
+        print(f"\n✗ SNR différent : {obs.SNR[obs.i]/snr_astropy:.4f}")
+
+    # Test variations
+    print(f"\n{'='*80}")
+    print(f"TEST VARIATIONS")
+    print(f"{'='*80}")
+
+    results = []
+
+    # Variation exposure time
+    for t in [100, 500, 1000, 2000, 5000]:
+        obs = Observation(instruments=instruments, instrument=instrument_name,
+                         exposure_time=t, SNR_res="per pix", IFS=False, test=True)
+
+        source_eps = obs.Signal_el[obs.i] / t
+        sky_eps = obs.sky[obs.i] / t
+        dark_eps = obs.Dark_current_f[obs.i] / t
+
+        snr_astropy = signal_to_noise_oir_ccd(
+            t=t, source_eps=source_eps, sky_eps=sky_eps, dark_eps=dark_eps,
+            rd=params['RN'], npix=int(obs.number_pixels_used), gain=1.0
+        )
+
+        results.append({
+            'param': 'exp_time',
+            'value': t,
+            'snr_generic': obs.SNR[obs.i],
+            'snr_astropy': snr_astropy,
+            'ratio': obs.SNR[obs.i]/snr_astropy
+        })
+
+    # Variation sky
+    sky_factors = [0.1, 0.5, 1.0, 2.0, 5.0]
+    for factor in sky_factors:
+        idx = list(instruments['Charact.']).index('Sky')
+        original = instruments[instrument_name][idx]
+        instruments[instrument_name][idx] = params['Sky'] * factor
+
+        obs = Observation(instruments=instruments, instrument=instrument_name,
+                         exposure_time=1000, SNR_res="per pix", IFS=False, test=True)
+
+        source_eps = obs.Signal_el[obs.i] / 1000
+        sky_eps = obs.sky[obs.i] / 1000
+        dark_eps = obs.Dark_current_f[obs.i] / 1000
+
+        snr_astropy = signal_to_noise_oir_ccd(
+            t=1000, source_eps=source_eps, sky_eps=sky_eps, dark_eps=dark_eps,
+            rd=params['RN'], npix=int(obs.number_pixels_used), gain=1.0
+        )
+
+        instruments[instrument_name][idx] = original
+
+        results.append({
+            'param': 'sky',
+            'value': factor,
+            'snr_generic': obs.SNR[obs.i],
+            'snr_astropy': snr_astropy,
+            'ratio': obs.SNR[obs.i]/snr_astropy
+        })
+
+    # Afficher résultats
+    import pandas as pd
+    df = pd.DataFrame(results)
+
+    print("\nVariation exposure time:")
+    print(df[df['param']=='exp_time'][['value', 'snr_generic', 'snr_astropy', 'ratio']])
+
+    print("\nVariation sky:")
+    print(df[df['param']=='sky'][['value', 'snr_generic', 'snr_astropy', 'ratio']])
+
+    print(f"\n{'='*80}")
+    print(f"CONCLUSION")
+    print(f"{'='*80}")
+
+    ratio_std = df['ratio'].std()
+    ratio_mean = df['ratio'].mean()
+
+    print(f"Ratio moyen: {ratio_mean:.4f}")
+    print(f"Écart-type: {ratio_std:.4f}")
+
+    if ratio_std < 0.01:
+        print(f"✓ Ratio constant → les variations sont cohérentes")
+    else:
+        print(f"✗ Ratio varie → problème dans le calcul")
+
+    if abs(ratio_mean - 1.0) < 0.15:
+        print(f"✓ Ratio proche de 1 → calculs cohérents")
+    else:
+        print(f"✗ Ratio = {ratio_mean:.4f} → différence systématique")
+
+if __name__ == "__main__":
+    simple_snr_comparison()
