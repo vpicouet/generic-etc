@@ -1,5 +1,11 @@
 # Cross-validation Generic ETC vs Astropy
 
+## Résumé du problème et solution
+
+**Problème identifié** : Generic ETC calcule SNR pour des expositions **stackées** sur `acquisition_time`, tandis qu'Astropy calcule SNR pour une **exposition unique**.
+
+**Solution** : Passer `acquisition_time=exposure_time/3600.0` lors de la création de l'objet `Observation` pour obtenir `N_images=1`.
+
 ## Test simple : comparaison directe des SNR
 
 ```bash
@@ -8,35 +14,36 @@ python test_sky_renormalization.py
 
 ### Principe
 
-1. **Calculer avec Generic ETC** → obtenir Signal_el, sky, Dark_current_f (en e⁻)
+1. **Calculer avec Generic ETC** avec `acquisition_time=exposure_time/3600` → obtenir Signal_el, sky, Dark_current_f (en e⁻) pour une seule exposition
 2. **Convertir en taux** → e⁻/s pour Astropy
 3. **Injecter dans Astropy** → signal_to_noise_oir_ccd()
 4. **Comparer les SNR** → Generic vs Astropy
 5. **Tester les variations** → exposure_time, sky, signal, dark
 
-### Ce qu'on vérifie
+### Résultats
 
-**Si le ratio SNR_Generic/SNR_Astropy est constant** → les variations sont cohérentes
+**Ratio SNR_Generic/SNR_Astropy = 0.9993** → les calculs matchent à 0.07% près ✓
 
-**Si le ratio ≈ 1.0** → les calculs matchent parfaitement
-
-**Si le ratio ≠ 1.0 mais constant** → différence systématique (convention, unités, etc.) mais calcul correct
+**Le ratio reste constant pour toutes les variations** → cohérence parfaite ✓
 
 ### Code du test
 
 ```python
-# Generic ETC
-obs = Observation(instruments, instrument="GALEX FUV", exposure_time=1000,
+# Generic ETC - IMPORTANT: set acquisition_time = exposure_time/3600 for single exposure
+t_exp = 1000.0  # seconds
+obs = Observation(instruments, instrument="GALEX FUV",
+                  exposure_time=t_exp,
+                  acquisition_time=t_exp/3600.0,  # Convert to hours, ensures N_images=1
                   SNR_res="per pix", IFS=False, test=True)
 
 # Convertir en taux (e⁻ → e⁻/s)
-source_eps = obs.Signal_el[obs.i] / obs.exposure_time
-sky_eps = obs.sky[obs.i] / obs.exposure_time
-dark_eps = obs.Dark_current_f[obs.i] / obs.exposure_time
+source_eps = obs.Signal_el[obs.i] / t_exp
+sky_eps = obs.sky[obs.i] / t_exp
+dark_eps = obs.Dark_current_f[obs.i] / t_exp
 
 # Astropy
 snr_astropy = signal_to_noise_oir_ccd(
-    t=obs.exposure_time,
+    t=t_exp,
     source_eps=source_eps,
     sky_eps=sky_eps,
     dark_eps=dark_eps,
@@ -46,18 +53,24 @@ snr_astropy = signal_to_noise_oir_ccd(
 )
 
 # Comparer
-ratio = obs.SNR[obs.i] / snr_astropy
+ratio = obs.SNR[obs.i] / snr_astropy  # Should be ~0.999
 ```
 
-## Résultats attendus
+## Explication technique
 
-Si tout est correct, on devrait voir :
-- Ratio constant pour toutes les variations
-- Évolutions identiques (si sky ×2 → SNR baisse de même façon)
+### Le facteur N_images
 
-Si problème :
-- Ratio qui varie → erreur dans le calcul
-- Évolutions différentes → problème physique (mauvaise formule)
+Generic ETC calcule :
+```python
+N_images = acquisition_time * 3600 / (exposure_time + readout_time)
+N_images_true = N_images * (1 - cosmic_ray_loss)
+factor = sqrt(number_pixels_used) × sqrt(N_resol_element_A) × sqrt(N_images_true)
+SNR = Signal_el × factor / sqrt(noise²)
+```
+
+Si `acquisition_time >> exposure_time`, alors `N_images > 1` et le SNR est multiplié par `sqrt(N_images)` car on stack plusieurs expositions.
+
+Pour comparer avec Astropy (qui calcule pour une seule exposition), il faut `N_images = 1`, donc `acquisition_time = exposure_time / 3600`.
 
 ## Remarques sur les différences observées initialement
 

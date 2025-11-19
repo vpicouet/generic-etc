@@ -5,7 +5,18 @@ Si on renormalise le Sky d'entrée, tout devrait matcher !
 """
 
 import sys
-sys.path.insert(0, 'notebooks')
+import os
+
+# Store original directory
+_original_dir = os.path.dirname(os.path.abspath(__file__))
+
+# If running from project root, need to be in notebooks for data access
+if os.path.exists(os.path.join(_original_dir, 'notebooks')):
+    os.chdir(os.path.join(_original_dir, 'notebooks'))
+    sys.path.insert(0, '.')
+else:
+    # Already in notebooks or subdirectory
+    sys.path.insert(0, 'notebooks')
 
 def compute_manual_calculation():
     """
@@ -465,10 +476,11 @@ def simple_snr_comparison():
 
     t_exp = 1000.0
 
-    # Generic ETC
+    # Generic ETC - create observation with acquisition_time = exposure_time so N_images = 1
     obs = Observation(
         instruments=instruments, instrument=instrument_name,
-        exposure_time=t_exp, SNR_res="per pix", IFS=False, test=True
+        exposure_time=t_exp, SNR_res="per pix", IFS=False, test=True,
+        acquisition_time=t_exp / 3600.0  # Convert to hours
     )
 
     print(f"\nGeneric ETC:")
@@ -478,6 +490,13 @@ def simple_snr_comparison():
     print(f"  number_pixels_used: {obs.number_pixels_used}")
     print(f"  pixels_total_source: {obs.pixels_total_source}")
     print(f"  SNR: {obs.SNR[obs.i]:.6e}")
+    print(f"\nGeneric ETC debug:")
+    print(f"  N_images_true: {obs.N_images_true}")
+    print(f"  N_resol_element_A: {obs.N_resol_element_A}")
+    print(f"  factor: {obs.factor}")
+    print(f"  acquisition_time: {obs.acquisition_time} h")
+    print(f"  exposure_time: {obs.exposure_time} s")
+    print(f"  RN_final: {obs.RN_final[obs.i]:.6e} e⁻")
 
     # Convertir en taux pour Astropy (e⁻ → e⁻/s)
     source_eps_generic = obs.Signal_el[obs.i] / t_exp
@@ -525,7 +544,8 @@ def simple_snr_comparison():
     # Variation exposure time
     for t in [100, 500, 1000, 2000, 5000]:
         obs = Observation(instruments=instruments, instrument=instrument_name,
-                         exposure_time=t, SNR_res="per pix", IFS=False, test=True)
+                         exposure_time=t, SNR_res="per pix", IFS=False, test=True,
+                         acquisition_time=t / 3600.0)
 
         source_eps = obs.Signal_el[obs.i] / t
         sky_eps = obs.sky[obs.i] / t
@@ -552,7 +572,8 @@ def simple_snr_comparison():
         instruments[instrument_name][idx] = params['Sky'] * factor
 
         obs = Observation(instruments=instruments, instrument=instrument_name,
-                         exposure_time=1000, SNR_res="per pix", IFS=False, test=True)
+                         exposure_time=1000, SNR_res="per pix", IFS=False, test=True,
+                         acquisition_time=1000 / 3600.0)
 
         source_eps = obs.Signal_el[obs.i] / 1000
         sky_eps = obs.sky[obs.i] / 1000
