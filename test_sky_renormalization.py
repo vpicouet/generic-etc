@@ -594,6 +594,66 @@ def simple_snr_comparison():
             'ratio': obs.SNR[obs.i]/snr_astropy
         })
 
+    # Variation dark current
+    dark_factors = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+    for factor in dark_factors:
+        idx = list(instruments['Charact.']).index('Dark_current')
+        original = instruments[instrument_name][idx]
+        instruments[instrument_name][idx] = params['Dark_current'] * factor
+
+        obs = Observation(instruments=instruments, instrument=instrument_name,
+                         exposure_time=1000, SNR_res="per pix", IFS=False, test=True,
+                         acquisition_time=1000 / 3600.0)
+
+        source_eps = obs.Signal_el[obs.i] / 1000
+        sky_eps = obs.sky[obs.i] / 1000
+        dark_eps = obs.Dark_current_f[obs.i] / 1000
+
+        snr_astropy = signal_to_noise_oir_ccd(
+            t=1000, source_eps=source_eps, sky_eps=sky_eps, dark_eps=dark_eps,
+            rd=params['RN'], npix=int(obs.number_pixels_used), gain=1.0
+        )
+
+        instruments[instrument_name][idx] = original
+
+        results.append({
+            'param': 'dark',
+            'value': factor,
+            'snr_generic': obs.SNR[obs.i],
+            'snr_astropy': snr_astropy,
+            'ratio': obs.SNR[obs.i]/snr_astropy
+        })
+
+    # Variation signal (flux)
+    signal_factors = [0.5, 1.0, 2.0, 5.0, 10.0]
+    for factor in signal_factors:
+        idx = list(instruments['Charact.']).index('Signal')
+        original = instruments[instrument_name][idx]
+        instruments[instrument_name][idx] = params['Signal'] * factor
+
+        obs = Observation(instruments=instruments, instrument=instrument_name,
+                         exposure_time=1000, SNR_res="per pix", IFS=False, test=True,
+                         acquisition_time=1000 / 3600.0)
+
+        source_eps = obs.Signal_el[obs.i] / 1000
+        sky_eps = obs.sky[obs.i] / 1000
+        dark_eps = obs.Dark_current_f[obs.i] / 1000
+
+        snr_astropy = signal_to_noise_oir_ccd(
+            t=1000, source_eps=source_eps, sky_eps=sky_eps, dark_eps=dark_eps,
+            rd=params['RN'], npix=int(obs.number_pixels_used), gain=1.0
+        )
+
+        instruments[instrument_name][idx] = original
+
+        results.append({
+            'param': 'signal',
+            'value': factor,
+            'snr_generic': obs.SNR[obs.i],
+            'snr_astropy': snr_astropy,
+            'ratio': obs.SNR[obs.i]/snr_astropy
+        })
+
     # Afficher résultats
     import pandas as pd
     df = pd.DataFrame(results)
@@ -603,6 +663,12 @@ def simple_snr_comparison():
 
     print("\nVariation sky:")
     print(df[df['param']=='sky'][['value', 'snr_generic', 'snr_astropy', 'ratio']])
+
+    print("\nVariation dark current:")
+    print(df[df['param']=='dark'][['value', 'snr_generic', 'snr_astropy', 'ratio']])
+
+    print("\nVariation signal (flux):")
+    print(df[df['param']=='signal'][['value', 'snr_generic', 'snr_astropy', 'ratio']])
 
     print(f"\n{'='*80}")
     print(f"CONCLUSION")
