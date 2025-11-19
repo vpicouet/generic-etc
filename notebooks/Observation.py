@@ -1,57 +1,108 @@
+"""
+Generic Exposure Time Calculator (ETC) for Spectroscopic Instruments
+
+This module provides a comprehensive exposure time calculator and observation simulator
+for various types of spectrographs and spectro-imagers. It supports:
+- Slit spectrographs
+- Slitless spectrographs
+- Prism spectrographs
+- Fiber integral field spectrographs
+- Slicer integral field spectrographs
+
+Main classes:
+    - ExposureTimeCalulator: Main ETC widget for SNR calculations and trade-off analysis
+    - Observation: Handles observation modeling and image/cube simulation
+
+Author: Vincent Picouet
+Institution: California Institute of Technology
+Repository: https://github.com/vpicouet/generic-etc
+"""
+
 # %%
-from astropy.table import Table
+# Standard library imports
+import os
+import glob
+import re
 import warnings
-warnings.filterwarnings("ignore")
-from ipywidgets import Button, Layout, jslink, IntText, IntSlider, interactive, interact, HBox, Layout, VBox
-from astropy.modeling.functional_models import Gaussian2D, Gaussian1D
-import os, glob
-from IPython.display import display, clear_output
-import ipywidgets as widgets
-import matplotlib.pyplot as plt
+import functools
 import inspect
-from astropy.io import fits
-import numpy as np
 from functools import wraps
-import inspect
+
+# Third-party imports
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import cmocean
+
+# Scipy imports
 from scipy.sparse import dia_matrix
-from scipy.interpolate import interpn
+from scipy.interpolate import interpn, RegularGridInterpolator
 from scipy.special import erf
 from scipy import special
-from scipy.ndimage import gaussian_filter1d, gaussian_filter
-import pandas as pd
-import functools
-import re
+from scipy.ndimage import gaussian_filter1d, gaussian_filter, map_coordinates
+from scipy.stats import norm
+from scipy.optimize import curve_fit
+
+# Astropy imports
+from astropy.table import Table
+from astropy.io import fits
+from astropy.modeling.functional_models import Gaussian2D, Gaussian1D
 from astropy.modeling.models import BlackBody
 from astropy import units as u
 from astropy.visualization import quantity_support
-# from astropy.visualization import ZScaleInterval
-from astropy.cosmology import Planck15 as cosmo
-import astropy.units as u
-from scipy.interpolate import RegularGridInterpolator
-from astropy.wcs import WCS
-import numpy as np
 from astropy.cosmology import Planck18 as cosmo
-import cmocean
-from scipy.stats import norm
+from astropy.wcs import WCS
+
+# IPython and widgets
+from IPython.display import display, clear_output
+import ipywidgets as widgets
+from ipywidgets import Button, Layout, jslink, IntText, IntSlider, interactive, interact, HBox, VBox
+
+# Matplotlib utilities
 from matplotlib.offsetbox import AnchoredText
-from scipy.optimize import curve_fit
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.colors import LogNorm, SymLogNorm
 
+# Configure warnings and numpy
+warnings.filterwarnings("ignore")
 np.seterr(invalid='ignore')
- 
 
-from scipy.ndimage import map_coordinates
+# ============================================================================
+# Module-level constants
+# ============================================================================
 
+# Default image dimensions for simulation (spatial x spectral pixels)
+DEFAULT_SPATIAL_PIXELS = 100  # n2
+DEFAULT_SPECTRAL_PIXELS = 500  # n1
 
-gaus = lambda x, a, xo, sigma, offset: a ** 2  * np.exp(-(x - xo)**2 / (2 * sigma**2)) + offset
-n2,n1=100,500
+# Lambda function for Gaussian profile
+gaus = lambda x, a, xo, sigma, offset: a ** 2 * np.exp(-(x - xo)**2 / (2 * sigma**2)) + offset
+
+# Maintain backward compatibility
+n2, n1 = DEFAULT_SPATIAL_PIXELS, DEFAULT_SPECTRAL_PIXELS
 
 
 def download(url, file=""):
-    """Download a file
     """
-    from tqdm import tqdm  # , tqdm_gui
+    Download a file from a URL with progress bar.
+
+    Parameters
+    ----------
+    url : str
+        URL of the file to download
+    file : str, optional
+        Local path where the file will be saved. Default is empty string.
+
+    Returns
+    -------
+    bool
+        True if download succeeded, False otherwise
+
+    Examples
+    --------
+    >>> success = download("https://example.com/data.fits", "local_data.fits")
+    """
+    from tqdm import tqdm
     import requests
 
     try:
@@ -69,13 +120,7 @@ def download(url, file=""):
             for data in response.iter_content(block_size):
                 progress_bar.update(len(data))
                 file.write(data)
-        # progress_bar.close()
-        # tqdm_gui.close(progress_bar)
-        # progress_bar.display()
-        # progress_bar.plt.close(progress_bar.fig)
-        # plt.show(block=False)
-        # plt.close('all')
-        # plt.close(progress_bar.fig)
+
         if total_size_in_bytes != 0 and progress_bar.n != total_size_in_bytes:
             print("ERROR, something went wrong")
             return False
@@ -84,7 +129,28 @@ def download(url, file=""):
 
 
 def create_wcs_header(wave_range_nm, spatial_extent_arcsec, output_shape):
-    """Crée un header WCS avec affichage correct du slicer wavelength dans DS9."""
+    """
+    Create a WCS header for proper wavelength display in DS9.
+
+    Parameters
+    ----------
+    wave_range_nm : tuple of float
+        Wavelength range (min, max) in nanometers
+    spatial_extent_arcsec : float
+        Spatial extent in arcseconds
+    output_shape : tuple of int
+        Shape of output cube (nwave, nx, ny)
+
+    Returns
+    -------
+    astropy.io.fits.Header
+        FITS header with WCS information for 3D datacube
+
+    Notes
+    -----
+    The header is configured for topocentric reference frame with tangent plane
+    projection for RA/DEC and wavelength in nanometers.
+    """
     from astropy.wcs import WCS
 
     wcs = WCS(naxis=3)
@@ -94,15 +160,15 @@ def create_wcs_header(wave_range_nm, spatial_extent_arcsec, output_shape):
     wcs.wcs.ctype = ["RA---TAN", "DEC--TAN", "WAVE"]
     wcs.wcs.cunit = ["deg", "deg", "nm"]
     wcs.wcs.specsys = "TOPOCENT"
-    wcs.wcs.restfrq = 0  # Ajout pour lecture correcte en spectre
-    wcs.wcs.restwav = (wave_range_nm[0] + wave_range_nm[1]) / 2  # Onde centrale
-    
+    wcs.wcs.restfrq = 0  # For proper spectral reading
+    wcs.wcs.restwav = (wave_range_nm[0] + wave_range_nm[1]) / 2  # Central wavelength
+
     header = wcs.to_header()
     header['SPECSYS'] = 'TOPOCENT'
     header['WCSNAME'] = 'SIMULATED'
     header['BUNIT'] = 'erg/cm2/s/arcsec2/A'
     header['OBJECT'] = 'Simulated Cube'
-    
+
     return header
 
 
@@ -242,50 +308,6 @@ def resample_cube(input_hdu, wave_range_nm, spatial_extent_arcsec, output_shape,
         )
         print(scale_factor,resampled_cube)
         return resampled_cube * abs(scale_factor)
-
-    # else:
-    #     # in this case I just keep the exact same cube and act as if it was exactly the size of the FOV
-    #     # print("phys",phys,True)
-    #     # if we are out of limit, we change the reshift of the cube to end in the limit:
-    #     # wave_start_in, wave_end_in = 203,205
-    #     # wave_start_out, wave_end_out = 400, 500
-    #     input_wave_center = (wave_start_in+ wave_end_in)/2
-    #     inst_wave_center = (wave_start_out+ wave_end_out)/2
-    #     if 1>0 : #(input_wave_center < wave_start_out ) | (input_wave_center> wave_end_out):
-    #         ratio = inst_wave_center/input_wave_center
-    #         # print(ratio)
-    #         # = 121.5
-    #         redshift = inst_wave_center/(input_wave_center/(1+0.7))-1
-    #         # print(redshift)
-    #         wave_start_in, wave_end_in = wave_start_in*ratio, wave_end_in*ratio
-    #     input_wave = np.linspace(wave_start_in, wave_end_in, input_nz)
-    #     # print(input_wave)
-    #     input_x = np.linspace(-abs(spatial_radius_in_x), abs(spatial_radius_in_x), input_nx)
-    #     input_y = np.linspace(-abs(spatial_radius_in_y),abs( spatial_radius_in_y), input_ny)
-
-    #     output_wave = np.linspace(wave_start_out, wave_end_out, output_shape[0])
-    #     # print(wave_start_in, wave_end_in, wave_start_out, wave_end_out)
-    #     output_x = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[2])
-    #     output_y = np.linspace(-spatial_radius_out, spatial_radius_out, output_shape[1])        
-
-    #     interpolator = RegularGridInterpolator(
-    #         (input_wave, input_x, input_y),
-    #         input_cube,
-    #         method='linear',
-    #         bounds_error=False,
-    #         fill_value=None
-    #     )
-    #     W, X, Y = np.meshgrid(output_wave, output_x, output_y, indexing='ij')
-    #     resampled_cube = interpolator((W, X, Y))
-        # if np.nanmin(resampled_cube)<0:
-        #     resampled_cube -= np.nanmin(resampled_cube)
-        # scale_factor = (
-        #     (output_x[1] - output_x[0]) / (input_x[1] - input_x[0]) *
-        #     (output_y[1] - output_y[0]) / (input_y[1] - input_y[0]) *
-        #     (output_wave[1] - output_wave[0]) / (input_wave[1] - input_wave[0])
-        # )
-        # # print(np.max(resampled_cube),scale_factor)
-        # return resampled_cube * scale_factor
         # # TODO est ce des pixels ou autre chose ?? si c'est des pixels il faut multiplier par le rapport de la taille des pixels
 
 
@@ -487,10 +509,7 @@ type_="" #"new_" #""
 #new is for when we don't use fraction and use RN (false I think), "" is with fraction true positives and RN/gain, seems better 
 path=""
 # path = "/Users/Vincent/Github/fireball2-etc/notebooks/"
-table_threshold = fits.open(path+"../data/Instruments/EMCCD/%sthreshold_%s.fits"%(type_,n))[0].data
-table_snr = fits.open(path+"../data/Instruments/EMCCD/%ssnr_max_%s.fits"%(type_,n))[0].data
-table_fraction_rn = fits.open(path+"../data/Instruments/EMCCD/%sfraction_rn_%s.fits"%(type_,n))[0].data
-table_fraction_flux = fits.open(path+"../data/Instruments/EMCCD/%sfraction_flux_%s.fits"%(type_,n))[0].data
+
 
 
 
@@ -577,31 +596,114 @@ def mostFrequent(arr):
 
 
 class ExposureTimeCalulator(widgets.HBox):
+    """
+    Interactive Exposure Time Calculator widget for spectroscopic instruments.
+
+    This class provides a comprehensive GUI-based exposure time calculator that allows
+    users to interactively modify instrument, detector, and observation parameters while
+    visualizing their impact on signal-to-noise ratio (SNR), noise budget, and limiting flux.
+
+    The calculator supports multiple types of instruments:
+    - Slit spectrographs
+    - Slitless spectrographs
+    - Fiber spectrographs
+    - Integral Field Spectrographs (IFS)
+    - Imagers
+
+    Key Features
+    ------------
+    - Real-time SNR calculation and visualization
+    - Interactive parameter adjustment via sliders and dropdowns
+    - Multi-instrument comparison capability
+    - Support for EMCCD-specific parameters (gain, CIC, smearing, thresholding)
+    - Trade-off analysis by varying any instrument parameter
+    - Integration with online instrument database
+
+    Parameters
+    ----------
+    instruments : pandas.DataFrame, optional
+        DataFrame containing instrument characteristics from the database
+    database : str, optional
+        Database source: "Online DB" or "Local DB"
+    instrument : str, default="FIREBall-2 2025"
+        Name of the instrument to load from the database
+    x_axis : str, default='exposure_time'
+        Parameter to use as x-axis for SNR evolution plots
+    time_max : float, default=3005
+        Maximum exposure time in seconds for plot range
+    SNR_res : str, default="per Res elem"
+        SNR calculation mode: "per pix", "per Res elem", or "per Source"
+    spectrograph : bool, default=True
+        Whether the instrument is a spectrograph (vs imager)
+    **kwargs : dict
+        Additional keyword arguments passed to parent HBox widget
+
+    Attributes
+    ----------
+    new : Observation
+        Instance of Observation class handling the actual SNR calculations
+    instruments_dict : dict
+        Dictionary mapping instrument names to their parameter dictionaries
+    output : ipywidgets.Output
+        Output widget for displaying plots
+
+    Examples
+    --------
+    >>> instruments = load_instruments()
+    >>> etc = ExposureTimeCalulator(instruments=instruments, instrument="JWST NIRSpec")
+    >>> display(etc)
+
+    Notes
+    -----
+    This widget inherits from ipywidgets.HBox and is designed to be displayed
+    in Jupyter notebooks or similar interactive environments.
+
+    See Also
+    --------
+    Observation : Core SNR calculation class
+    load_instruments : Function to load instrument database
+    """
+
     @initializer
-    def __init__(self, instruments=None,database=None, instrument="FIREBall-2 2025",x_axis='exposure_time', time_max = 3005,SNR_res="per Res elem" ,spectrograph=True, **kwargs):#, Atmosphere=0.5, Throughput=0.13*0.9, follow_temp=False, acquisition_time=1, Sky=4, Signal=24, EM_gain=1400,RN=109,CIC_charge=0.005, Dark_current=0.08,readout_time=1.5,counting_mode=False,smearing=0.7,extra_background=0,temperature=-100,PSF_RMS_mask=2.5,PSF_RMS_det = 3.5,QE=0.45,cosmic_ray_loss_per_sec=0.005,
+    def __init__(self, instruments=None, database=None, instrument="FIREBall-2 2025", x_axis='exposure_time', time_max=3005, SNR_res="per Res elem", spectrograph=True, **kwargs):
         """
-        Generate an ETC app containing multiple widghet that allow to change the ETC parameters
-        as well as plotting the result (e- and noise budget, limiting flux, SNR) in terms of the different parameters.
+        Initialize the Exposure Time Calculator widget.
+
+        Creates an interactive widget with parameter controls and sets up the
+        Observation instance for SNR calculations.
         """
         super().__init__()
-        self.instruments=instruments
+        self.instruments = instruments
         args, _, _, locals_ = inspect.getargvalues(inspect.currentframe())
-        self.Redshift=0
+        self.Redshift = 0
+
+        # Load instrument parameters from database and set as class attributes
         for i in range(len(instruments)):
             if hasattr(self, instruments["Charact."][i]):
                 pass
             else:
-                setattr(self, instruments["Charact."][i], instruments[instrument][i] ) if  isinstance(type(instruments[instrument][i]), (int, float, complex,np.float64))  else setattr(self, instruments["Charact."][i], float(instruments[instrument][i]) )#.replace("%","")
-        exposure_time=np.logspace(0,np.log10(time_max))
+                # Convert to float if numeric type, otherwise force conversion
+                setattr(self, instruments["Charact."][i], instruments[instrument][i]) if isinstance(type(instruments[instrument][i]), (int, float, complex, np.float64)) else setattr(self, instruments["Charact."][i], float(instruments[instrument][i]))
+
+        # Create logarithmic exposure time array for SNR evolution plots
+        exposure_time = np.logspace(0, np.log10(time_max))
+
+        # Build dictionary mapping instrument names to their parameter dictionaries
+        # Filters out masked constants from the instrument database
         self.instruments_dict = {name: {key: val for key, val in zip(instruments["Charact."][:], instruments[name][:]) if not isinstance(key, np.ma.core.MaskedConstant) and not isinstance(val, np.ma.core.MaskedConstant)} for name in instruments.colnames[3:]}
 
         self.output = widgets.Output()
-        time=exposure_time
-        self.time =  float(instruments[instrument][instruments["Charact."]=="exposure_time"][0])
+        time = exposure_time
+
+        # Get default exposure time from instrument database
+        self.time = float(instruments[instrument][instruments["Charact."]=="exposure_time"][0])
+
+        # Find index in exposure time array closest to default value
         i = np.argmin(abs(self.time - exposure_time))
-        self.arg=i
-        # print(self.arg,i,time[i],time[i],self.time)
-        IFS = False if self.dimensions==2 else True
+        self.arg = i
+
+        # Determine if instrument is Integral Field Spectrograph (3D) or regular spectrograph (2D)
+        IFS = False if self.dimensions == 2 else True
 
         self.new = Observation(instruments=instruments, instrument=instrument,Redshift=self.Redshift,Throughput_FWHM=self.Throughput_FWHM, smearing=self.smearing,counting_mode=False,exposure_time=exposure_time,Sky=self.Sky,acquisition_time=self.acquisition_time,Signal=self.Signal,EM_gain=self.EM_gain,RN=self.RN, CIC_charge=self.CIC_charge, Dark_current=self.Dark_current,PSF_RMS_mask=self.PSF_RMS_mask,PSF_RMS_det=self.PSF_RMS_det,QE=self.QE, extra_background=self.extra_background,
             Collecting_area=self.Collecting_area, pixel_scale=self.pixel_scale, Throughput=self.Throughput, Spectral_resolution=self.Spectral_resolution, Slitwidth=self.Slitwidth, dispersion=self.dispersion,
@@ -609,42 +711,33 @@ class ExposureTimeCalulator(widgets.HBox):
 
 
         self.x = exposure_time
-        
-        
-        style={}
-        width = '400px'
-        width = '500px'
-        small = '247px'
-        small = '230px'
-        psmall = '186px'
-        vsmall = '147px'
-        c_update=False
-        # ALL THE DIFFERENT VARIATION WITH TEMPERATURE
-        self.smearing_poly = np.poly1d([-0.0306087, -2.2226087])#np.poly1d([-0.0453913, -3.5573913])
-        # self.dark_poly = np.poly1d([2.13640462e-05, 7.83596239e-03, 9.57682651e-01, 3.86154296e+01])#with plateau
-        # self.dark_poly = np.poly1d([0.07127906, 6.83562573]) #without plateau# does to low because only calibrated down to -100 but then it kinda saturated. maybe because of CIC?
-        self.dark_poly = dark_plateau
-        # self.CIC_poly = np.poly1d([1.57925408e-05, 2.80396270e-03, 1.34276224e-01]) #without plateau# does to low because only calibrated down to -100 but then it kinda saturated. maybe because of CIC?
 
+        # Widget styling
+        style = {}
+        width, small, psmall, vsmall = '500px', '230px', '186px', '147px'
+        c_update = False  # Disable continuous update for better performance
 
-        # self.other_options =  ['exposure_time','acquisition_time',"Signal","RN","Dark_current" ,'Sky',"readout_time","PSF_RMS_det","QE","cosmic_ray_loss_per_sec","Throughput","Atmosphere","lambda_stack","Size_source",'Collecting_area',"Δx","Δλ"]#[:-3]
-        self.other_options =  [
-                               "------DECTECTOR PERFORMANCE","QE","RN","Dark_current" ,"cosmic_ray_loss_per_sec","EM_gain","extra_background","CIC_charge", #,"pixel_size"
-                               "-------------OBSERVED SOURCE","Signal",'Sky',"Size_source","Line_width", #,"Redshift"
-                               "--------OBSERVATION STRATEGY", "Atmosphere",'exposure_time','acquisition_time',"readout_time","lambda_stack",  "wavelength", #,"Δx","Δλ"
-                               "-----------INSTRUMENT DESIGN",'Collecting_area',"pixel_scale","Throughput","PSF_RMS_mask","PSF_RMS_det",
-                               "---------SPECTROGRAPH DESIGN","Spectral_resolution","Slitwidth","Slitlength","dispersion"] #,"Bandwidth"
-        self.other_options_imager =  [
-                               "------DECTECTOR PERFORMANCE","QE","RN","Dark_current" ,"cosmic_ray_loss_per_sec", #,"pixel_size"
-                               "-------------OBSERVED SOURCE","Signal",'Sky',"Size_source",#,"Redshift"
-                               "--------OBSERVATION STRATEGY", "Atmosphere",'exposure_time','acquisition_time',"readout_time",
-                               "-----------INSTRUMENT DESIGN",'Collecting_area',"pixel_scale","Throughput","PSF_RMS_det"]
-        self.fb_options_no_temp = self.other_options #+ ["----------AMPLIFIED DECTECTOR","smearing"]
+        # EMCCD temperature-dependent calibrations (polynomial fits from empirical data)
+        self.smearing_poly = np.poly1d([-0.0306087, -2.2226087])  # Charge transfer inefficiency vs temperature
+        self.dark_poly = dark_plateau  # Dark current vs temperature with low-temp plateau
+
+        # X-axis parameter options organized by category (for dropdown menus)
+        self.other_options = ["------DECTECTOR PERFORMANCE", "QE", "RN", "Dark_current", "cosmic_ray_loss_per_sec", "EM_gain", "extra_background", "CIC_charge",
+                              "-------------OBSERVED SOURCE", "Signal", 'Sky', "Size_source", "Line_width",
+                              "--------OBSERVATION STRATEGY", "Atmosphere", 'exposure_time', 'acquisition_time', "readout_time", "lambda_stack", "wavelength",
+                              "-----------INSTRUMENT DESIGN", 'Collecting_area', "pixel_scale", "Throughput", "PSF_RMS_mask", "PSF_RMS_det",
+                              "---------SPECTROGRAPH DESIGN", "Spectral_resolution", "Slitwidth", "Slitlength", "dispersion"]
+
+        self.other_options_imager = ["------DECTECTOR PERFORMANCE", "QE", "RN", "Dark_current", "cosmic_ray_loss_per_sec",
+                                     "-------------OBSERVED SOURCE", "Signal", 'Sky', "Size_source",
+                                     "--------OBSERVATION STRATEGY", "Atmosphere", 'exposure_time', 'acquisition_time', "readout_time",
+                                     "-----------INSTRUMENT DESIGN", 'Collecting_area', "pixel_scale", "Throughput", "PSF_RMS_det"]
+
+        self.fb_options_no_temp = self.other_options
         self.fb_options = self.fb_options_no_temp + ["temperature"]
 
-        self.instrument = widgets.Dropdown(options=instruments.colnames[3:],value=instrument,description="Instrument", layout=Layout(width=small),description_tooltip="Instrument characteristics",continuous_update=c_update)
-        # print(self.instruments_dict[self.instrument.value]["dispersion"],type(self.instruments_dict[self.instrument.value]["dispersion"]))
-        self.spectro = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
+        self.instrument = widgets.Dropdown(options=instruments.colnames[3:], value=instrument, description="Instrument", layout=Layout(width=small), description_tooltip="Instrument characteristics", continuous_update=c_update)
+        self.spectro = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True  # Check if spectrograph (has dispersion) or imager
 
         self.ylog = widgets.Checkbox(value=False,description='ylog',disabled=False,style =dict(description_width='initial'), layout=Layout(width='147px'),description_tooltip="Use this check box to use a log scale for the y axis",continuous_update=c_update)
         self.yscale="linear"
@@ -659,10 +752,7 @@ class ExposureTimeCalulator(widgets.HBox):
         self.source_im = widgets.Dropdown(options=["Sim image","Source","Convolved source","SNR"],value="Sim image",description='Type',disabled=False, layout=Layout(width='179px'),description_tooltip="Type of the images. Either the source, the simulated images or the SNR",continuous_update=c_update)
         #,"SNR"
         self.spectrograph = widgets.Checkbox(value=self.spectro,description='Spectro',disabled=False, visible=False,layout=Layout(width='167px'),description_tooltip="Check this box if the instrument is not just an imager (= has a dispersive element)",continuous_update=c_update)
-        # self.IFS_value = ("IFS" if IFS else "Spectro") is self.spectro else "Imager"
-        # self.IFS_value = "IFS" if IFS else ("Spectro" if self.spectro else "Imager")
-        # self.IFS = widgets.Dropdown(value="Spectro",options=["Imager","Spectro","IFS"],description='Type',disabled=False, layout=Layout(width='147px'),description_tooltip="IFS is instrument is an integral field spectrograph (not just a single slit of fiber)",continuous_update=True)
-       
+
         self.Signal = widgets.FloatLogSlider(min=-21, max=-9 ,value=self.Signal,description='Source brightness', style =dict(description_width='initial'), layout=Layout(width=width),description_tooltip="Flux of the diffuse source in ergs/cm2/s/arcsec2/Å.",continuous_update=c_update)
         self.Sky = widgets.FloatLogSlider( min=-23, max=-15,value=self.Sky,base=10, style =dict(description_width='initial'), layout=Layout(width=width),description='Sky    brightness',description_tooltip="Level of sky background illumination (zodiacal and galactic) in ergs/cm2/s/arcsec2/Å ",continuous_update=c_update)
         # self.acquisition_time = widgets.FloatLogSlider( min=-1, max=3,value=self.acquisition_time,style =style ,base=10,layout=Layout(width=width),description='Taq (h)',description_tooltip="Total acquisition time [hours]",continuous_update=c_update)
@@ -766,11 +856,7 @@ class ExposureTimeCalulator(widgets.HBox):
         if self.follow_temp.value:
             self.Dark_current.value = self.dark_poly(self.temperature.value)#10**
             self.smearing.value = self.smearing_poly(self.temperature.value)
-            # self.CIC_charge.value = self.CIC_poly(self.temperature.value)
-  
 
-        # print(self.new.QE,self.new.N_images_true)
-        # self.Signal_el = self.new.Signal_el
 
         wids = widgets.interactive(self.update,x_axis=self.x_axis,xlog=self.xlog,log=self.ylog, SNR_res=self.SNR_res,smearing=self.smearing,counting_mode=self.counting_mode,exposure=self.exposure,Sky=self.Sky,acquisition_time=self.acquisition_time,Signal=self.Signal,EM_gain=self.EM_gain,RN=self.RN, CIC_charge=self.CIC_charge, Dark_current=self.Dark_current,temperature=self.temperature,follow_temp=self.follow_temp,fwhm = self.fwhm,QE=self.QE, extra_background=self.extra_background,
             Collecting_area=self.Collecting_area, pixel_scale=self.pixel_scale, Throughput=self.Throughput, Spectral_resolution=self.Spectral_resolution, SlitDims=self.SlitDims, dispersion=self.dispersion,
@@ -794,14 +880,8 @@ class ExposureTimeCalulator(widgets.HBox):
 
         def save_data(_):
             self.f = lambda x: self.wavelength.value + (self.dispersion.value/10) * (x - n1/2)
-            # fitswrite(self.ifs_cube,"/tmp/ifs_cube.fits")                
-            # fitswrite(np.transpose(self.ifs_cube_stack,(2,1,0)),"/tmp/ifs_cube_stack.fits")
-
-
             fitswrite(np.transpose(self.ifs_cube,(1,0,2)),"/tmp/ifs_cube.fits")                
             fitswrite(np.transpose(self.ifs_cube_stack,(1,0,2)),"/tmp/ifs_cube_stack.fits")
-
-
             np.savetxt("/tmp/spectra.csv", np.asarray([ self.f(np.arange(n1)), self.ifs_spectra[0].get_ydata(), self.ifs_spectra_stack[0].get_ydata() ]), delimiter=",",header="wavelength,ifs_spectra, ifs_spectra_stac")
             return
         self.save_data_button.on_click(save_data)
@@ -815,11 +895,6 @@ class ExposureTimeCalulator(widgets.HBox):
         # self.amp_tab = HBox([self.EM_gain,self.CIC_charge])
         self.fb_tab = VBox([HBox([self.follow_temp ]),HBox([self.temperature,self.smearing]),HBox([self.change]) ])
         self.im_tab =         VBox([HBox([self.spectra,self.Redshift,self.Throughput_FWHM ]), HBox([self.units,self.Δx, self.Δλ])   , HBox([self.interpolation,self.QElambda,self.atmlambda,self.sky_lines,self.source_im]) , HBox([self.minmax])   ]) #self.fraction_lya
-        
-        # if ("FIREBall-2" in instrument):
-        #     tab_contents = [ "Observed Source", "Observation strategy" , "Instrument Design","Detector performance",  "Spectrograph Design","FIREBall specific"]#, ''] #,"Amplified Detector"
-        #     children = [ self.obs_tab, self.strat_tab,  self.inst_tab,  self.det_tab,self.spectro_tab, self.fb_tab]#, self.]
-        # else:
         tab_contents = [ "Observed Source", "Observation strategy" , "Instrument Design","Detector performance",  "Spectrograph Design"]#,"Imaging"] #,"Amplified Detector"
         children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab]#, self.im_tab] 
 
@@ -1111,17 +1186,8 @@ class ExposureTimeCalulator(widgets.HBox):
 
                 self.ifs_cube = np.repeat(self.im[:, :, np.newaxis], n3, axis=2)
                 self.ifs_cube = np.take_along_axis(self.ifs_cube, indices, axis=1)
-                # self.ifs_cube += self.im[:, :, np.newaxis] * ratios_reshaped
                 self.ifs_cube_stack = np.ones((n2,n1,n3))#np.repeat( self.im_stack[:, :, np.newaxis], n3, axis=2)
-                # self.ifs_cube_stack = np.take_along_axis(self.im_stack, indices, axis=1)
-                # self.ifs_cube_stack += self.im_source[:, :, np.newaxis] * ratios_reshaped
 
-                # self.ifs_cube = np.repeat(self.imaADU_without_source[:, :, np.newaxis], n3, axis=2)
-                # self.ifs_cube = np.take_along_axis(self.ifs_cube, indices, axis=1)
-                # self.ifs_cube += self.imaADU_source[:, :, np.newaxis] * ratios_reshaped
-                # self.ifs_cube_stack = np.repeat( self.imaADU_source[:, :, np.newaxis], n3, axis=2)
-                # self.ifs_cube_stack = np.take_along_axis(self.ifs_cube_stack, indices, axis=1)
-                # self.ifs_cube_stack += self.imaADU_source[:, :, np.newaxis] * ratios_reshaped
             else:
                 self.stack_square = self.nax21.plot([np.nan],[np.nan],"k:")
                 self.ifs_slice = self.nax20.imshow(np.nan*self.ifs_cube[:,0,:], aspect="auto",cmap=self.current_cmap)#,interpolation=interpolation)
@@ -1149,11 +1215,6 @@ class ExposureTimeCalulator(widgets.HBox):
             self.fig3.tight_layout()
             self.fig3.canvas.toolbar_position = 'bottom'
             plt.show(self.fig3)
-            # if self.IFS.value:
-            #     plt.show(self.fig3)
-            # else:
-            #     # self.fig3.clf()
-            #     plt.close(self.fig3)
         display(HBox([self.output,new]))
 
 
@@ -1179,8 +1240,6 @@ class ExposureTimeCalulator(widgets.HBox):
 
 
     def on_instrument_change(self):
-        # with self.out1:
-        #     print(self.instruments_dict[self.instrument.value]["dispersion"])
         self.spectro = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
         self.spectrograph.value = False if np.isnan(self.instruments_dict[self.instrument.value]["dispersion"]) else True
         self.Δλ.layout.visibility = 'hidden' if self.output_tabs.selected_index==1 else 'visible'  
@@ -1191,15 +1250,8 @@ class ExposureTimeCalulator(widgets.HBox):
             self.x_axis.layout.visibility = 'visible'  
             self.SNR_res.layout.visibility = 'visible'  
             self.xlog.layout.visibility = 'visible'  
-            # self.ylog.layout.visibility = 'visible'  
             with self.out1:
                 self.Size_source.value-=0.01
-            # if ("FIREBall-2" in self.instrument.value):
-            #     self.spectro_tab.layout.display = 'block'
-            #     self.fb_tab.layout.display = 'block'
-            #     self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab, self.fb_tab]
-            #     self.controls.set_title(5, 'FIREBall specific')
-            # else:
             if self.spectro:
                 self.spectro_tab.layout.display = 'block'
                 self.fb_tab.layout.display = 'none'
@@ -1213,16 +1265,6 @@ class ExposureTimeCalulator(widgets.HBox):
             self.x_axis.layout.visibility = 'hidden'  
             self.SNR_res.layout.visibility = 'hidden'  
             self.xlog.layout.visibility = 'hidden'  
-            # self.ylog.layout.visibility = 'hidden'  
-
-            # if ("FIREBall-2" in self.instrument.value):
-            #     self.spectro_tab.layout.display = 'block'
-            #     self.fb_tab.layout.display = 'block'
-            #     self.controls.children = [ self.obs_tab, self.strat_tab,  self.inst_tab, self.det_tab, self.spectro_tab, self.im_tab, self.fb_tab]
-            #     self.controls.set_title(4, 'Spectrograph design')
-            #     self.controls.set_title(5, 'Imaging')
-            #     self.controls.set_title(6, 'FIREBall specific')
-            # else:
             if self.spectro:
                 self.spectro_tab.layout.display = 'block'
                 self.fb_tab.layout.display = 'none'
@@ -1411,75 +1453,6 @@ class ExposureTimeCalulator(widgets.HBox):
 
 
 
-                    # if x_axis == 'exposure_time':
-                    #     dict_val["exposure_time"] = space(1, self.time_max)
-                    # elif x_axis == 'Sky':
-                    #     dict_val["Sky"] = space(10**self.Sky.min, 10**self.Sky.max)
-                    # elif x_axis == 'Signal':
-                    #     dict_val["Signal"] = space(10**self.Signal.min, 10**self.Signal.max)
-                    # elif x_axis == 'EM_gain':
-                    #     dict_val["EM_gain"] = space(self.EM_gain.min, self.EM_gain.max)
-                    # elif x_axis == 'acquisition_time':
-                    #     dict_val["acquisition_time"] = space(self.acquisition_time.min, self.acquisition_time.max)
-                    # elif x_axis == 'RN':
-                    #     dict_val["RN"] = space(self.RN.min, self.RN.max)
-                    # elif x_axis == 'CIC_charge':
-                    #     dict_val["CIC_charge"] = space(0.001, self.CIC_charge.max)
-                    # elif x_axis == 'Dark_current':
-                    #     dict_val["Dark_current"] = space(self.Dark_current.min, self.Dark_current.max)
-                    # elif x_axis == 'readout_time':
-                    #     dict_val["readout_time"] = space(self.exposure.min, 10 * dict_val.get("exposure_time", 1))  # fallback si non défini
-                    # elif x_axis == 'smearing':
-                    #     dict_val["smearing"] = space(self.smearing.min, self.smearing.max)
-                    # elif x_axis == 'Redshift':
-                    #     dict_val["Redshift"] = space(self.Redshift.min, self.Redshift.max)
-                    # elif x_axis == 'temperature':
-                    #     dict_val["temperature"] = space(self.temperature.min, self.temperature.max)
-                    # elif x_axis == 'QE':
-                    #     dict_val["QE"] = space(self.QE.min, self.QE.max)
-                    # elif x_axis == 'PSF_RMS_mask':
-                    #     dict_val["PSF_RMS_mask"] = space(self.fwhm.min, self.fwhm.value[1])
-                    # elif x_axis == 'PSF_RMS_det':
-                    #     dict_val["PSF_RMS_det"] = space(self.fwhm.min, self.fwhm.max)
-                    # elif x_axis == 'extra_background':
-                    #     dict_val["extra_background"] = space(self.extra_background.min, self.extra_background.max)
-                    # elif x_axis == 'Δx':
-                    #     dict_val["Δx"] = space(self.Δx.min, self.Δx.max)
-                    # elif x_axis == 'Δλ':
-                    #     dict_val["Δλ"] = space(self.Δλ.min, self.Δλ.max)
-                    # elif x_axis == 'Throughput':
-                    #     dict_val["Throughput"] = space(self.Throughput.min, self.Throughput.max)
-                    # elif x_axis == 'Atmosphere':
-                    #     dict_val["Atmosphere"] = space(self.Atmosphere.min, self.Atmosphere.max)
-                    # elif x_axis == 'Line_width':
-                    #     dict_val["Line_width"] = space(self.Line_width.min, self.Line_width.max)
-                    # elif x_axis == 'Size_source':
-                    #     dict_val["Size_source"] = space(self.Size_source.min, self.Size_source.max)
-                    # elif x_axis == 'pixel_scale':
-                    #     dict_val["pixel_scale"] = space(self.pixel_scale.min, self.pixel_scale.max)
-                    # elif x_axis == 'pixel_size':
-                    #     dict_val["pixel_size"] = space(self.pixel_size.min, self.pixel_size.max)
-                    # elif x_axis == 'wavelength':
-                    #     dict_val["wavelength"] = space(self.wavelength.min, self.wavelength.max)
-                    # elif x_axis == 'Slitwidth':
-                    #     dict_val["Slitwidth"] = space(self.SlitDims.min, self.SlitDims.max)
-                    # elif x_axis == 'Slitlength':
-                    #     dict_val["Slitlength"] = space(self.SlitDims.min, self.SlitDims.max)
-                    # elif x_axis == 'Spectral_resolution':
-                    #     dict_val["Spectral_resolution"] = space(self.Spectral_resolution.min, self.Spectral_resolution.max)
-                    # elif x_axis == 'dispersion':
-                    #     dict_val["dispersion"] = space(self.dispersion.min, self.dispersion.max)
-                    # elif x_axis == 'lambda_stack':
-                    #     dict_val["lambda_stack"] = space(self.dispersion.value, self.Bandwidth)
-                    # elif x_axis == 'Collecting_area':
-                    #     dict_val["Collecting_area"] = space(10**self.Collecting_area.min, 10**self.Collecting_area.max)
-                    # elif x_axis == "cosmic_ray_loss_per_sec":
-                    #     dict_val["cosmic_ray_loss_per_sec"] = space(0, 1 / dict_val.get("exposure_time", 1))
-                    # elif x_axis == "Bandwidth":
-                    #     self.Bandwidth = space(0, 10 * self.Bandwidth)
-                    #     dict_val["Bandwidth"] = self.Bandwidth
-
-
                 dict_val = {
                     "exposure_time": exposure[1],
                     "Sky": Sky,
@@ -1534,12 +1507,6 @@ class ExposureTimeCalulator(widgets.HBox):
                             pixel_scale = dict_val[var_name]
                             rsetattr(self, '%s.layout.visibility'%(var_name), 'hidden'  )  
 
-                        # print(EM_gain, CIC_charge)              
-                # else:
-                #     rsetattr(self, '%s.layout.visibility'%("CIC_charge"), 'visible'  )                
-                #     rsetattr(self, '%s.layout.visibility'%("dispersion"), 'visible'  )                
-                #     rsetattr(self, '%s.layout.visibility'%("pixel_scale"), 'visible'  )                
-
                         
 
                 
@@ -1552,52 +1519,8 @@ class ExposureTimeCalulator(widgets.HBox):
                 arg = np.argmin(abs(new_value - value))
                 self.new = Observation(instruments=self.instruments, instrument=self.instrument.value,  Throughput_FWHM=Throughput_FWHM, Redshift=Redshift, exposure_time=exposure_time,Sky=Sky, acquisition_time=acquisition_time,counting_mode=counting_mode,Signal=Signal,EM_gain=EM_gain,RN=RN,CIC_charge=CIC_charge,Dark_current=Dark_current,readout_time=readout_time,smearing=smearing,extra_background=extra_background,i=arg,PSF_RMS_mask=PSF_RMS_mask,PSF_RMS_det=PSF_RMS_det,QE=QE,cosmic_ray_loss_per_sec=cosmic_ray_loss_per_sec, Throughput=Throughput, Atmosphere=Atmosphere,lambda_stack=lambda_stack,Slitwidth=Slitwidth, Bandwidth=self.Bandwidth,Size_source=Size_source,Collecting_area=Collecting_area,Δx=Δx,Δλ=Δλ,
                 pixel_scale=pixel_scale, Spectral_resolution=Spectral_resolution,  dispersion=dispersion,Line_width=Line_width,wavelength=wavelength,  pixel_size=pixel_size,len_xaxis=self.len_xaxis, Slitlength=Slitlength,IFS=IFS,SNR_res=SNR_res,spectrograph=spectrograph,test=test)
-                # self.new = Observation(
-                #     instruments=self.instruments,
-                #     instrument=self.instrument.value,
-                #     Throughput_FWHM=Throughput_FWHM,
-                #     Redshift=dict_val["Redshift"],
-                #     exposure_time=dict_val["exposure_time"],
-                #     Sky=dict_val["Sky"],
-                #     acquisition_time=dict_val["acquisition_time"],
-                #     counting_mode=counting_mode,
-                #     Signal=dict_val["Signal"],
-                #     EM_gain=dict_val["EM_gain"],
-                #     RN=dict_val["RN"],
-                #     CIC_charge=dict_val["CIC_charge"],
-                #     Dark_current=dict_val["Dark_current"],
-                #     readout_time=dict_val["readout_time"],
-                #     smearing=dict_val["smearing"],
-                #     extra_background=dict_val["extra_background"],
-                #     i=arg,
-                #     PSF_RMS_mask=dict_val["PSF_RMS_mask"],
-                #     PSF_RMS_det=dict_val["PSF_RMS_det"],
-                #     QE=dict_val["QE"],
-                #     cosmic_ray_loss_per_sec=dict_val["cosmic_ray_loss_per_sec"],
-                #     Throughput=dict_val["Throughput"],
-                #     Atmosphere=dict_val["Atmosphere"],
-                #     lambda_stack=dict_val["lambda_stack"],
-                #     Slitwidth=dict_val["Slitwidth"],
-                #     Bandwidth=dict_val["Bandwidth"],
-                #     Size_source=dict_val["Size_source"],
-                #     Collecting_area=dict_val["Collecting_area"],
-                #     Δx=dict_val["Δx"],
-                #     Δλ=dict_val["Δλ"],
-                #     pixel_scale=dict_val["pixel_scale"],
-                #     Spectral_resolution=dict_val["Spectral_resolution"],
-                #     dispersion=dict_val["dispersion"],
-                #     Line_width=dict_val["Line_width"],
-                #     wavelength=dict_val["wavelength"],
-                #     pixel_size=dict_val["pixel_size"],
-                #     len_xaxis=self.len_xaxis,
-                #     Slitlength=dict_val["Slitlength"],
-                #     IFS=IFS,
-                #     SNR_res=SNR_res,
-                #     spectrograph=spectrograph,
-                #     test=test
-                # )
+    
                 self.colors=self.new.colors
-
                 
                 if self.output_tabs.get_state()["selected_index"]==self.output_tabs.children.index(self.out1): 
                     ft=8
@@ -1658,9 +1581,7 @@ class ExposureTimeCalulator(widgets.HBox):
                     for artist in self.ax2.collections+self.ax1.collections:
                         artist.remove()
 
-                    self.stackplot2 = self.ax2.stackplot(new_value,self.new.SNR * np.array(self.new.noises).T[:-1,:]**2/self.new.Total_noise_final**2,alpha=0.7,colors=self.colors)
-                    # self.stackplot2 = ax3.stackplot(getattr(self,x), self.SNR * np.array(self.noises).T[:-1,:]**2/self.Total_noise_final**2,alpha=0.7,colors=self.colors)
-      
+                    self.stackplot2 = self.ax2.stackplot(new_value,self.new.SNR * np.array(self.new.noises).T[:-1,:]**2/self.new.Total_noise_final**2,alpha=0.7,colors=self.colors)      
                                 
                     self.ax0.set_ylabel('Noise (e-/%s/exp)'%(SNR_res.split(" ")[1]))     
                     self.ax1.set_ylabel('Contrib (e-/%s/exp)'%(SNR_res.split(" ")[1]))     
@@ -1702,19 +1623,12 @@ class ExposureTimeCalulator(widgets.HBox):
                         self.ax1.set_ylim(ymin=np.nanmin(self.number_pixels_used * np.array(self.new.electrons_per_pix[:,0])),ymax=np.max(self.number_pixels_used *np.sum(getattr(self.new,'electrons_per_pix'),axis=1)))
                         self.ax2.set_ylim(ymin=np.nanmin(np.array( self.new.SNR * np.array(self.new.noises).T[:-1,:]**2/self.new.Total_noise_final**2)[:,0]),ymax=np.nanmax(getattr(self.new,'SNR')))
 
-                        # if SNR:
-                        # else:
-                        #     self.ax2.set_ylim(ymin=np.nanmin(np.array( self.new.snrs_per_pixel * np.array(self.new.noises).T[:-1,:]**2/self.new.Total_noise_final**2)[:,0]),ymax=np.nanmax(getattr(self.new,'snrs_per_pixel')))
-
+ 
                     else:
                         self.ax0.set_ylim((-0.1,np.nanmax(  np.sqrt(np.nansum(np.multiply(self.new.noises_per_exp[:,:-1],self.new.noises_per_exp[:,:-1]),axis=1))  )   ))
                         self.ax1.set_ylim((0,  self.number_pixels_used *  np.max(np.sum(getattr(self.new,'electrons_per_pix'),axis=1))))
                         self.ax2.set_ylim((0,np.nanmax(self.new.SNR)))
-                        # if SNR:
-                        #     self.ax2.set_ylim((0,np.nanmax(self.new.SNR)))
-                        # else:
-                        #     self.ax2.set_ylim((0,np.nanmax(self.new.snrs_per_pixel)))
-
+ 
                     
                     if xlog:
                         try:
@@ -2031,16 +1945,10 @@ class ExposureTimeCalulator(widgets.HBox):
                                     self.ifs_cube = np. transpose (self.cube_detector, (1, 2, 0))  
                                     self.ifs_cube_stack =np.transpose (self.cube_detector_stack, (1, 2, 0))  
                                     test = self.ifs_cube.copy()
-                                    # self.ifs_cube_stack = subtract_continuum(self.ifs_cube_stack,self.ifs_cube_stack)
-                                    # self.ifs_cube = subtract_continuum(test,test)
-
-
+                    
                                     self.ifs_spectra[0].set_ydata(self.im[int(ax/2),int(ay/2)+int(Δx),:]) 
                                     self.ifs_spectra_stack[0].set_ydata(self.im_stack[int(ax/2),int(ay/2)+int(Δx),:])
-                        
-                                    # ifs_integ_spectra_stack =       np.nanmean(self.ifs_cube_stack[int(n3/2-(n3/n2)*Slitwidth/pixel_scale):int(n3/2+(n3/n2)*Slitwidth/pixel_scale),int(n2/2-Slitwidth/pixel_scale):int(n2/2+Slitwidth/pixel_scale),:],axis=(0,1)) 
-                                    # self.ifs_integ_spectra_stack[0].set_ydata( ifs_integ_spectra_stack)
-
+                    
 
                                 if self.Slitlength>Slitwidth:
                                     self.nax20.set_title(t12 + ": %i pixels × %i spaxels"%(n2,n3),fontsize=9)
@@ -2068,8 +1976,6 @@ class ExposureTimeCalulator(widgets.HBox):
                                 self.position1[0].set_label(r'{}'.format("\n".join(labels)))
                                 self.nax20.legend(loc="upper left", handlelength=0, handletextpad=0, fancybox=True, markerscale=0, fontsize=8, title="%s Noise (/pix)"%(self.instrument.value))
 
-                                # x1,x2 = (self.im.shape[0]-1)/2-(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale/2.35 ,  (self.im.shape[0]-1)/2+(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale/2.35
-                                # y1, y2 = Δx + (n2-1)/2-self.Size_source.value/pixel_scale/2.35 , Δx + (n2-1)/2+self.Size_source.value/pixel_scale/2.35
                                 x1,x2 = (self.im.shape[0]-1)/2-(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale ,  (self.im.shape[0]-1)/2+(self.im.shape[0]/n2)*self.Size_source.value/pixel_scale
                                 y1, y2 = Δx + (n2-1)/2-self.Size_source.value/pixel_scale , Δx + (n2-1)/2+self.Size_source.value/pixel_scale
 
@@ -2142,9 +2048,7 @@ class ExposureTimeCalulator(widgets.HBox):
                                     
 
                                     self.nax2_rp.legend(fontsize=7,loc="upper right",title="Radial profiles",title_fontsize=8)
-                                    # self.nax2_rp.plot(rmean2, profile2,":")
-                                    # self.nax2_rp.set_ylim((np.nanmin(profile),np.nanmax(profile)))
-                                    # self.nax2_rp.set_xlim((np.nanmin(rmean),np.nanmax(rmean)))
+
                                     self.nax2_rp.relim()                 # Recalculate limits based on current data
                                     self.nax2_rp.autoscale(enable=True, axis='both')
                                     self.nax2_rp2.relim()                 # Recalculate limits based on current data
@@ -2157,8 +2061,6 @@ class ExposureTimeCalulator(widgets.HBox):
                                 self.wavelength_line1.set_label("λ = %0.1f-%0.1f nm"%(self.f(int(n1/2)+int(Δλ)+0.5-(lambda_stack-1)/2), self.f(int(n1/2)+int(Δλ)+0.5+(lambda_stack-1)/2)))
                                 self.nax2s.legend(fontsize=7,loc="upper right")
                                 self.ifs_slice.set_clim(vmin=np.nanmin(self.ifs_cube), vmax=np.nanmax(self.ifs_cube))
-                                # self.nax2s.set_ylim((np.nanmin(list(self.im_stack[int(ax/2),int(n2/2),:]) +list(ifs_integ_spectra_stack)),np.nanmax(list(self.im_stack[int(ax/2),int(n2/2),:]) + list(ifs_integ_spectra_stack) )))
-                                # self.nax2s.set_ylim((np.nanmin(list(self.im_stack[int(ax/2),int(n2/2),:]) ),np.nanmax(list(self.im_stack[int(ax/2),int(n2/2),:])  )))
 
                                 title = '%s : FOV=%0.1famin$^2$, λ=%inm, Total Throughput=%i%%, Effective area=%0.1fcm$^2$, Platescale=%.1f,  PSF$_{x,λ}$=%0.1f, %0.1f pix, Npix = %i, t=%ih, F=%0.1E'%(self.instrument.value,self.FOV_size, self.wavelength.value, 100*self.Throughput.value*self.QE.value*self.Atmosphere.value, 100*100*self.Throughput.value*self.QE.value*self.Atmosphere.value*self.Collecting_area.value,  pixel_scale, 2.35*self.PSF_RMS_det/pixel_scale, 10*self.wavelength.value/self.Spectral_resolution.value/dispersion, self.number_pixels_used, self.acquisition_time.value, self.Signal.value)   
                                 # self.fig3.suptitle("Spectral image of %s at %0.1f nm"%(self.instrument.value, wavelength), fontsize=10)
@@ -2319,12 +2221,162 @@ def subtract_continuum(im,continuum_im):
 
 
 class Observation:
+    """
+    Core observation modeling and SNR calculation engine.
+
+    This class performs the detailed signal-to-noise ratio calculations for astronomical
+    observations, accounting for all major noise sources and instrument characteristics.
+    It handles both spectrographs and imagers, with special support for EMCCD detectors.
+
+    The Observation class computes:
+    - Source signal in electrons per pixel
+    - Noise contributions from: sky background, dark current, read noise, CIC
+    - Signal-to-noise ratio per pixel, per resolution element, or per source
+    - Optimal photon-counting thresholds for EMCCDs
+    - Simulated detector images and datacubes
+
+    Noise Sources Modeled
+    ----------------------
+    1. **Photon noise**: From source and sky background
+    2. **Dark current**: Temperature-dependent detector noise
+    3. **Read noise**: Detector readout electronics noise
+    4. **CIC (Clock Induced Charge)**: EMCCD-specific spurious charges
+    5. **Cosmic rays**: Pixel loss due to cosmic ray impacts
+    6. **Extra background**: Stray light, thermal emission, etc.
+
+    Key Calculations
+    ----------------
+    - Converts flux from erg/cm²/s/arcsec²/Å to electrons/pixel
+    - Accounts for atmospheric transmission
+    - Handles slit/fiber aperture losses
+    - Computes resolution element size
+    - Applies EMCCD gain and excess noise factor
+    - Optimizes photon-counting thresholds
+
+    Parameters
+    ----------
+    instruments : pandas.DataFrame, optional
+        Instrument database containing all instrument characteristics
+    instrument : str, default="FIREBall-2 2025"
+        Name of instrument to use from database
+    Atmosphere : float, optional
+        Atmospheric transmission fraction (0-1)
+    Throughput : float, optional
+        Instrument throughput excluding detector QE and atmosphere (0-1)
+    exposure_time : float or array, optional
+        Exposure time(s) in seconds
+    counting_mode : bool, default=False
+        Enable photon-counting mode with thresholding
+    Signal : float, optional
+        Source surface brightness in erg/cm²/s/arcsec²/Å
+    EM_gain : int, optional
+        EMCCD amplification gain
+    RN : float, optional
+        Read noise in electrons/pixel
+    CIC_charge : float, optional
+        Clock-induced charge in electrons/pixel (EMCCD)
+    Dark_current : float, optional
+        Dark current in electrons/pixel/hour
+    Sky : float, optional
+        Sky background in erg/cm²/s/arcsec²/Å
+    readout_time : float, optional
+        Detector readout time in seconds
+    extra_background : float, optional
+        Additional background in electrons/pixel/hour
+    acquisition_time : float, optional
+        Total acquisition time in hours
+    smearing : float, optional
+        EMCCD charge transfer inefficiency (exponential tail length in pixels)
+    PSF_RMS_mask : float, optional
+        PSF RMS at slit/mask level in arcseconds
+    PSF_RMS_det : float, optional
+        PSF RMS at detector level in arcseconds
+    QE : float, optional
+        Quantum efficiency (0-1)
+    cosmic_ray_loss_per_sec : float, optional
+        Fraction of pixels lost per second due to cosmic rays
+    Size_source : float, optional
+        Source spatial extent (sigma) in arcseconds
+    Slitwidth : float, optional
+        Slit/fiber width in arcseconds
+    Slitlength : float, optional
+        Slit/fiber length in arcseconds
+    Collecting_area : float, optional
+        Telescope collecting area in m²
+    pixel_scale : float, optional
+        Pixel scale in arcseconds/pixel
+    Spectral_resolution : int, optional
+        Spectral resolution R = λ/Δλ
+    dispersion : float, optional
+        Spectral dispersion in Å/pixel
+    Line_width : float, optional
+        Emission line equivalent width in Å
+    wavelength : float, optional
+        Observed wavelength in nm
+    IFS : bool, optional
+        True for Integral Field Spectrograph
+    SNR_res : str, default="per pix"
+        SNR calculation mode: "per pix", "per Res elem", or "per Source"
+    spectrograph : bool, default=True
+        True for spectrograph, False for imager
+
+    Attributes
+    ----------
+    Signal_noise : float or array
+        Signal shot noise in electrons
+    Sky_noise : float or array
+        Sky background shot noise in electrons
+    Dark_current_noise : float or array
+        Dark current noise in electrons
+    RN_amplified : float or array
+        Read noise after amplification in electrons
+    CIC_noise : float or array
+        CIC noise in electrons
+    SNR : float or array
+        Signal-to-noise ratio
+    elem_size : float or array
+        Resolution element size in pixels
+    number_pixels_used : float or array
+        Number of pixels for SNR calculation
+
+    Examples
+    --------
+    >>> obs = Observation(
+    ...     instrument="FIREBall-2 2025",
+    ...     Signal=1e-17,
+    ...     Sky=4e-18,
+    ...     exposure_time=100,
+    ...     EM_gain=1400
+    ... )
+    >>> print(f"SNR = {obs.SNR[obs.i]:.2f}")
+
+    Notes
+    -----
+    - All flux inputs are in erg/cm²/s/arcsec²/Å
+    - Internal calculations convert to electrons/pixel
+    - EMCCD parameters (EM_gain, CIC, smearing) only apply when EM_gain > 1
+    - Photon counting mode requires counting_mode=True and EM_gain > 1
+
+    See Also
+    --------
+    ExposureTimeCalulator : Interactive widget wrapper
+    """
+
     @initializer
-    # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13*0.9, exposure_time=50, counting_mode=False, Signal=1e-16, EM_gain=1400, RN=109, CIC_charge=0.005, Dark_current=0.08, Sky=10000, readout_time=1.5, extra_background = 0,acquisition_time = 2,smearing=0,i=25,plot_=False,temperature=-100,n=n,PSF_RMS_mask=5, PSF_RMS_det=8, QE = 0.45,cosmic_ray_loss_per_sec=0.005,Size_source=16,lambda_stack=1,Slitwidth=5,Bandwidth=200,Collecting_area=1,Δx=0,Δλ=0,pixel_scale=np.nan, Spectral_resolution=np.nan, dispersion=np.nan,Line_width=np.nan,wavelength=np.nan, pixel_size=np.nan,len_xaxis=50):#,photon_kept=0.7#, flight_background_damping = 0.9
-    def __init__(self, instruments=None, instrument="FIREBall-2 2025", Atmosphere=None, Throughput=None, exposure_time=None, counting_mode=False, Signal=None, EM_gain=None, RN=None, CIC_charge=None, Dark_current=None, Sky=None, readout_time=None, extra_background = None,acquisition_time = None,smearing=None,i=33,plot_=False,n=n,PSF_RMS_mask=None, PSF_RMS_det=None, QE = None,cosmic_ray_loss_per_sec=None,Size_source=None,lambda_stack=1,Slitwidth=None,Bandwidth=None,Collecting_area=None,Δx=None,Δλ=None,pixel_scale=None, Spectral_resolution=None, dispersion=None,Line_width=None,wavelength=None, pixel_size=None,len_xaxis=50,Slitlength=None,IFS=None, Redshift=None, Throughput_FWHM=None, SNR_res="per pix",spectrograph=True,test=True):#,photon_kept=0.7#, flight_background_damping = 0.9
-    # def __init__(self, instrument="FIREBall-2 2023", Atmosphere=0.5, Throughput=0.13, exposure_time=50, counting_mode=False, Signal=1e-17, EM_gain=1500, RN=40, CIC_charge=0.005, Dark_current=1, Sky=2e-18, readout_time=5, extra_background = 0.5,acquisition_time = 2,smearing=1.50,i=33,plot_=False,n=n,PSF_RMS_mask=2.5, PSF_RMS_det=3, QE = 0.4,cosmic_ray_loss_per_sec=0.005,Size_source=16,lambda_stack=0.21,Slitwidth=6,Bandwidth=160,Collecting_area=0.707,Δx=0,Δλ=0,pixel_scale=1.1, Spectral_resolution=1300, dispersion=0.21,Line_width=15,wavelength=200, pixel_size=13,len_xaxis=50,Slitlength=10):#,photon_kept=0.7#, flight_background_damping = 0.9
+    def __init__(self, instruments=None, instrument="FIREBall-2 2025", Atmosphere=None, Throughput=None,
+                 exposure_time=None, counting_mode=False, Signal=None, EM_gain=None, RN=None,
+                 CIC_charge=None, Dark_current=None, Sky=None, readout_time=None, extra_background=None,
+                 acquisition_time=None, smearing=None, i=33, plot_=False, n=n, PSF_RMS_mask=None,
+                 PSF_RMS_det=None, QE=None, cosmic_ray_loss_per_sec=None, Size_source=None,
+                 lambda_stack=1, Slitwidth=None, Bandwidth=None, Collecting_area=None, Δx=None, Δλ=None,
+                 pixel_scale=None, Spectral_resolution=None, dispersion=None, Line_width=None,
+                 wavelength=None, pixel_size=None, len_xaxis=50, Slitlength=None, IFS=None,
+                 Redshift=None, Throughput_FWHM=None, SNR_res="per pix", spectrograph=True, test=True):
         """
-        ETC calculator: computes the noise budget at the detector level based on instrument/detector parameters
+        Initialize Observation instance and compute noise budget.
+
+        Loads instrument parameters from database, computes all noise sources,
+        and calculates the resulting signal-to-noise ratio.
         """
         self.instruments = instruments
         self.instruments_dict = {name: {key: val for key, val in zip(instruments["Charact."][:], instruments[name][:]) if not isinstance(key, np.ma.core.MaskedConstant) and not isinstance(val, np.ma.core.MaskedConstant)} for name in instruments.colnames[3:]}
@@ -2336,141 +2388,102 @@ class Observation:
 
         self.initilize(IFS=IFS)
     
-    # TODO delete all the *= that actually multiply again the signal
-    def initilize(self,IFS):
-        self.precise = False
-        #####################################
-        # Any of the parameter below can either be a float or an array allowing to check the evolution of the SNR 
-        #####################################
-                
-        # self.Signal = Gaussian2D(amplitude=self.Signal,x_mean=0,y_mean=0,x_stddev=self.Size_source,y_stddev=self.Line_width,theta=0)(self.Δx,self.Δλ)
-        # print("\ni",self.i,"\nAtmosphere",self.Atmosphere, "\nThroughput=",self.Throughput,"\nSky=",self.Sky, "\nacquisition_time=",self.acquisition_time,"\ncounting_mode=",self.counting_mode,"\nSignal=",self.Signal,"\nEM_gain=",self.EM_gain,"RN=",self.RN,"CIC_charge=",self.CIC_charge,"Dark_current=",self.Dark_current,"\nreadout_time=",self.readout_time,"\nsmearing=",self.smearing,"\nextra_background=",self.extra_background,"\nPSF_RMS_mask=",self.PSF_RMS_mask,"\nPSF_RMS_det=",self.PSF_RMS_det,"\nQE=",self.QE,"\ncosmic_ray_loss_per_sec=",self.cosmic_ray_loss_per_sec,"\nlambda_stack",self.lambda_stack,"\nSlitwidth",self.Slitwidth, "\nBandwidth",self.Bandwidth,"\nSize_source",self.Size_source,"\nCollecting_area",self.Collecting_area)
-        # print("\Collecting_area",self.Collecting_area, "\nΔx=",self.Δx,"\nΔλ=",self.Δλ, "\napixel_scale=",self.pixel_scale,"\nSpectral_resolution=",self.Spectral_resolution,"\ndispersion=",self.dispersion,"\nLine_width=",self.Line_width,"wavelength=",self.wavelength,"pixel_size=",self.pixel_size)
-      
-      
-        self.spectro = self.spectrograph#False if np.isnan(self.instruments_dict[self.instrument]["dispersion"]) else True
-        # Simple hack to me able to use UV magnitudes (not used for the ETC)
-        if np.max([self.Signal])>1:
-            self.Signal = 10**(-(self.Signal-20.08)/2.5)*2.06*1E-16
-        #TODO be sure we account for potentialfwhm_sigma_ratio ratio here
+    def initilize(self, IFS):
+        """Initialize SNR calculation: flux corrections, aperture losses, resolution element sizes, noise sources."""
+        self.precise = False  # Precision mode disabled (would apply additional spatial/spectral flux corrections)
 
-        #####################################
-        # Adjust signal for circular aperture (fiber) geometry
-        #####################################
+        self.spectro = self.spectrograph
+
+        # Convert UV magnitude to flux if Signal > 1 (assumes magnitude input instead of erg/cm²/s/arcsec²/Å)
+        if np.max([self.Signal]) > 1:
+            self.Signal = 10**(-(self.Signal - 20.08) / 2.5) * 2.06 * 1E-16
+
+        # Apply π/4 correction for circular fiber aperture (disk vs square slit geometry)
         if type(self.Slitlength) == np.float64:
-            if (self.Slitlength==self.Slitwidth):
-                self.Signal *= np.pi/4 # ratio between fiber disk and square slit
-        #####################################
-        # If precision mode is on (currently not), apply spatial and spectral resolution dimming
-        #####################################
-        if self.precise: # TODO are we sure we should do that here?
-            self.Signal *= (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) )
-            #convolve input flux by spectral resolution
-            self.spectro_resolution_A = 10*self.wavelength/self.Spectral_resolution
+            if (self.Slitlength == self.Slitwidth):
+                self.Signal *= np.pi / 4
+
+        # Apply spatial/spectral resolution corrections (only when precision mode enabled - currently disabled)
+        if self.precise:
+            self.Signal *= (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)))
+            self.spectro_resolution_A = 10 * self.wavelength / self.Spectral_resolution
             if self.spectro:
-                self.Signal *= (erf(self.Line_width / (2 * np.sqrt(2) * self.spectro_resolution_A  )) )
-            # print("Factor spatial and spectral",  (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) ),   (erf(self.Line_width / (2 * np.sqrt(2) * 10*self.wavelength/self.Spectral_resolution)) ))
-        #####################################
-        # Compute fraction of signal passing through the slit (if slit spectro)
-        #####################################
-        if ~np.isnan(self.Slitwidth).all(): #& (self.precise) # & (self.SNR_res!="per Source")
-            # assess flux fraction going through slit
-            # self.flux_fraction = ((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)     *    ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
-            self.flux_fraction =   ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
-            if    (~self.IFS): 
-                self.flux_fraction *=((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)  
+                self.Signal *= (erf(self.Line_width / (2 * np.sqrt(2) * self.spectro_resolution_A)))
+
+        # Compute flux fraction passing through slit/fiber aperture (Gaussian PSF with error function)
+        if ~np.isnan(self.Slitwidth).all():
+            self.flux_fraction = ((1 + erf(self.Slitlength / (2 * np.sqrt(2) * self.PSF_RMS_mask))) - 1)
+            if (~self.IFS):  # For non-IFS, also apply slit width losses (IFS transfers flux to adjacent slices)
+                self.flux_fraction *= ((1 + erf(self.Slitwidth / (2 * np.sqrt(2) * self.PSF_RMS_mask))) - 1)
         else:
             self.flux_fraction = 1
         self.flux_fraction_slit_applied = self.flux_fraction
 
+        # Calculate PSF size in spectral direction (pixels) and FWHM/sigma conversion ratio
+        self.PSF_lambda_pix = 10 * self.wavelength / self.Spectral_resolution / self.dispersion
+        fwhm_sigma_ratio = 2.35
 
-
-        # if self.smearing>0:
-        # self.Signal *= 1 - np.exp(-1/(self.smearing+1e-15)) - np.exp(-2/(self.smearing+1e-15))  - np.exp(-3/(self.smearing+1e-15))
-        
-        # @mat do you think that's right?
-        self.PSF_lambda_pix = 10*self.wavelength / self.Spectral_resolution / self.dispersion
-        fwhm_sigma_ratio =2.35#1.0 # 2.355
+        # Compute source size and resolution element size in pixels
         if self.spectro:
-            source_spatial_pixels = np.maximum(1,np.minimum(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.pixel_scale, self.Slitlength / self.pixel_scale))
-            # source_spatial_pixels = np.minimum(self.Size_source * fwhm_sigma_ratio / self.pixel_scale, self.Slitwidth / self.pixel_scale)
+            source_spatial_pixels = np.maximum(1, np.minimum(np.sqrt(self.Size_source**2 + self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.pixel_scale, self.Slitlength / self.pixel_scale))
             source_spectral_pixels = np.maximum(1, np.sqrt(self.PSF_lambda_pix**2 + (np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)**2))
-            self.source_size = np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale,1)    * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
-            self.pixels_total_source =  self.source_size  * ( np.ceil(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2)*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
-            # source_spectral_pixels = np.sqrt(    (np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)**2    + (self.pixel_scale)**2)
-            # self.source_size = np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
-            # self.pixels_total_source = self.source_size * (np.ceil(self.Size_source * fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
-# np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale     *  np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+self.PSF_lambda_pix**2)
-            # TODO this one gives the same result for tot and not tot but I think we should replace PSF_RMS_mask by PSF_RMS_det
-            self.elem_size =  np.ceil(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale)      *  np.ceil(np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2))   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
-            # self.elem_size =  np.maximum(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale,1)      *  np.maximum(np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+self.PSF_lambda_pix**2),1)   * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
-            # self.elem_size =  np.ceil(np.minimum(self.PSF_RMS_det *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale)         *    np.ceil(np.sqrt((self.PSF_RMS_mask/self.pixel_scale)**2+self.PSF_lambda_pix**2))                                                                                    * ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1)
-            # print( np.ceil(np.minimum(self.PSF_RMS_det *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale), np.ceil(np.sqrt((self.PSF_RMS_mask/self.pixel_scale)**2+self.PSF_lambda_pix**2))   , ( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1))
-            # print(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength ,self.pixel_scale)
-        else:
-            self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale) **2
-            self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale) **2
-        #####################################
-        # Determine number of pixels used in SNR estimation
-        #####################################
-        if self.SNR_res=="per pix":
-          self.number_pixels_used = 1
-        elif self.SNR_res=="per Res elem": # is that true ? when not IFS, the SNR won't get bigger than the slit , the rest will be cut
+            self.source_size = np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale, 1) * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
+            self.pixels_total_source = self.source_size * (np.ceil(np.sqrt(self.Size_source**2 + self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
+            self.elem_size = np.ceil(np.minimum(self.PSF_RMS_mask * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale) * np.ceil(np.sqrt(np.minimum(self.PSF_RMS_det / self.pixel_scale, self.PSF_lambda_pix)**2 + np.minimum(self.Line_width / self.dispersion, self.PSF_lambda_pix)**2)) * (np.ceil(self.PSF_RMS_mask * fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
+        else:  # Imager mode
+            self.source_size = (self.Size_source * fwhm_sigma_ratio / self.pixel_scale) ** 2
+            self.elem_size = (self.PSF_RMS_det * fwhm_sigma_ratio / self.pixel_scale) ** 2
+
+        # Determine number of pixels for SNR calculation based on user selection
+        if self.SNR_res == "per pix":
+            self.number_pixels_used = 1
+        elif self.SNR_res == "per Res elem":
             self.number_pixels_used = np.ceil(self.elem_size)
-        elif self.SNR_res=="per Source":
+        elif self.SNR_res == "per Source":
             self.number_pixels_used = np.ceil(self.pixels_total_source)
 
-        # print(self.IFS,self.elem_size,self.source_size, self.pixels_total_source)
-        # print(np.minimum(self.PSF_RMS_mask *fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale, np.sqrt(np.minimum(self.PSF_RMS_det/self.pixel_scale,self.PSF_lambda_pix)**2+np.minimum(self.Line_width/self.dispersion,self.PSF_lambda_pix)**2),( np.ceil(self.PSF_RMS_mask*fwhm_sigma_ratio/ self.Slitwidth) if self.IFS else 1),     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength) /self.pixel_scale      , np.sqrt(np.minimum(self.Slitwidth/self.pixel_scale,self.Bandwidth/self.dispersion)**2+(np.minimum(self.Line_width,self.Bandwidth)/self.dispersion)**2)  , (np.ceil(self.Size_source*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1) , )
+        # Plot colors for noise budget visualization
+        red, blue, violet, yellow, green, pink, grey = '#E24A33', '#348ABD', '#988ED5', '#FBC15E', '#8EBA42', '#FFB5B8', '#777777'
+        self.colors = [red, violet, yellow, blue, green, pink, grey]
 
-        red, blue, violet, yellow, green, pink, grey  = '#E24A33','#348ABD','#988ED5','#FBC15E','#8EBA42','#FFB5B8','#777777'
-        self.colors= [red, violet, yellow  ,blue, green, pink, grey ]
+        # Compute noise sources: excess noise factor, CIC, dark current, effective collecting area
+        self.ENF = 1 if (self.counting_mode | ((self.EM_gain * np.ones(self.len_xaxis))[self.i] < 2)) else 2  # Excess Noise Factor: 1 for photon counting or no gain, √2 for EMCCD stochastic amplification
 
-        #####################################
-        # Compute noise sources: CIC, dark current, and effective area
-        #####################################
-        self.ENF = 1 if (self.counting_mode | ((self.EM_gain*np.ones(self.len_xaxis))[self.i]<2)) else 2 # Excess Noise Factor 
+        self.CIC_noise = np.sqrt(self.CIC_charge * self.ENF)
+        self.Dark_current_f = self.Dark_current * self.exposure_time / 3600  # Convert e-/pix/hour to e-/pix/frame
+        self.Dark_current_noise = np.sqrt(self.Dark_current_f * self.ENF)
+        self.effective_area = self.QE * self.Throughput * self.Atmosphere * (self.Collecting_area * 100 * 100)  # cm²
 
-        self.CIC_noise = np.sqrt(self.CIC_charge * self.ENF) 
-        self.Dark_current_f = self.Dark_current * self.exposure_time / 3600 # e/pix/frame
-        self.Dark_current_noise =  np.sqrt(self.Dark_current_f * self.ENF)
-        self.effective_area =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
-        # For now we put the regular QE without taking into account the photon kept fracton, because then infinite loop. 
-        # Two methods to compute it: interpolate_optimal_threshold & compute_optimal_threshold
-        # self.pixel_scale  = (self.pixel_scale*np.pi/180/3600) #go from arcsec/pix to str/pix 
-        self.arcsec2str = (np.pi/180/3600)**2
-        self.Sky_CU = convert_ergs2LU(self.Sky, self.wavelength)  
-        # print(self.Sky_CU,self.Sky, self.wavelength, self.Redshift)
-        if (self.counting_mode) : #& (self.EM_gain>=1)  Normaly if counting mode is on EM_gain is >1
+        # Unit conversions and sky background preparation
+        self.arcsec2str = (np.pi / 180 / 3600) ** 2  # Convert arcsec² to steradians
+        self.Sky_CU = convert_ergs2LU(self.Sky, self.wavelength)  # Convert sky from erg/cm²/s/arcsec²/Å to Lyman units
+
+        # For photon-counting mode (EMCCD with thresholding), compute optimal threshold
+        if (self.counting_mode):  # Normally counting mode requires EM_gain > 1
             if self.spectro:
-                if  (self.SNR_res!="per Source"):
-                    self.factor_CU2el =  self.effective_area * np.minimum(self.Slitwidth,self.Size_source)  * self.arcsec2str  * self.dispersion
+                if (self.SNR_res != "per Source"):
+                    self.factor_CU2el = self.effective_area * np.minimum(self.Slitwidth, self.Size_source) * self.arcsec2str * self.dispersion
                 else:
-                    self.factor_CU2el =  self.effective_area  * self.Size_source  * self.arcsec2str  * self.dispersion
+                    self.factor_CU2el = self.effective_area * self.Size_source * self.arcsec2str * self.dispersion
             else:
-                self.factor_CU2el =  self.effective_area
+                self.factor_CU2el = self.effective_area
 
-            self.sky = self.Sky_CU*self.factor_CU2el*self.exposure_time  # el/pix/frame
-            self.Sky_noise_pre_thresholding = np.sqrt(self.sky * self.ENF) 
-            self.signal_pre_thresholding = self.Signal*self.factor_CU2el*self.exposure_time  # el/pix/frame
-            self.n_threshold, self.Photon_fraction_kept, self.RN_fraction_kept, self.gain_thresholding = self.interpolate_optimal_threshold(plot_=self.plot_, i=self.i)#,flux=self.signal_pre_thresholding)
-            # self.n_threshold, self.Photon_fraction_kept, self.RN_fraction_kept, self.gain_thresholding = self.compute_optimal_threshold(plot_=plot_, i=i,flux=self.signal_pre_thresholding)
+            self.sky = self.Sky_CU * self.factor_CU2el * self.exposure_time  # e-/pix/frame
+            self.Sky_noise_pre_thresholding = np.sqrt(self.sky * self.ENF)
+            self.signal_pre_thresholding = self.Signal * self.factor_CU2el * self.exposure_time  # e-/pix/frame
+            self.n_threshold, self.Photon_fraction_kept, self.RN_fraction_kept, self.gain_thresholding = self.interpolate_optimal_threshold(plot_=self.plot_, i=self.i)
         else:
-            self.n_threshold, self.Photon_fraction_kept, self.RN_fraction_kept, self.gain_thresholding = np.zeros(self.len_xaxis),np.ones(self.len_xaxis),np.ones(self.len_xaxis), np.zeros(self.len_xaxis)
-                
-        # The faction of detector lost by cosmic ray masking (taking into account ~5-10 impact per seconds and around 2000 pixels loss per impact (0.01%))
-        self.cosmic_ray_loss = np.minimum(self.cosmic_ray_loss_per_sec*(self.exposure_time+self.readout_time/2),1)
-        self.QE_efficiency = self.Photon_fraction_kept * self.QE
-        self.effective_area =  self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
-        # TODO verify that indeed it should not depend on self.pixel_scale**2 !! We still see some dependancy, why that??
+            self.n_threshold, self.Photon_fraction_kept, self.RN_fraction_kept, self.gain_thresholding = np.zeros(self.len_xaxis), np.ones(self.len_xaxis), np.ones(self.len_xaxis), np.zeros(self.len_xaxis)
 
+        # Compute detector pixel loss due to cosmic rays (~5-10 impacts/sec, ~2000 pixels lost per impact)
+        self.cosmic_ray_loss = np.minimum(self.cosmic_ray_loss_per_sec * (self.exposure_time + self.readout_time / 2), 1)
+        self.QE_efficiency = self.Photon_fraction_kept * self.QE  # Effective QE accounting for photon counting losses
+        self.effective_area = self.QE_efficiency * self.Throughput * self.Atmosphere * (self.Collecting_area * 100 * 100)  # cm²
+
+        # Compute source and slit sizes after aperture effects (in arcseconds)
         self.nfibers = 1
-        # TODO need to verify that the evolution the sky and signal makes sense with nfibers... Maybe this has been solved
-        # self.source_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio/2,self.Slitlength)   *          (self.Size_source   if self.IFS else   np.minimum(self.Size_source*fwhm_sigma_ratio/2,self.Slitwidth)   )
-        # self.slit_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio/2,self.Slitlength)   *          (np.maximum(self.Size_source/2,self.Slitwidth)   if self.IFS else   self.Slitwidth   )
-
-        self.source_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *   (self.Size_source   if self.IFS else   np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitwidth)   )
-        self.slit_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *   (np.maximum(self.Size_source,self.Slitwidth)   if self.IFS else   self.Slitwidth   )
+        self.source_size_arcsec_after_slit = np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) * (self.Size_source if self.IFS else np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitwidth))
+        self.slit_size_arcsec_after_slit = np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) * (np.maximum(self.Size_source, self.Slitwidth) if self.IFS else self.Slitwidth)
 
         #####################################
         # Convert sky background to LU and then to electrons
@@ -2544,9 +2557,6 @@ class Observation:
         # else: # if line is unresolved for QSO for instance
         self.Signal_el =  self.Signal_LU * self.factor_CU2el * self.exposure_time * self.flux_fraction_slit_applied   # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
 
-
-
-
         #####################################
         # Compute other noise contributions (read noise, extra background)
         #####################################
@@ -2608,254 +2618,6 @@ class Observation:
         self.SB_lim_per_source = self.signal_nsig_ergs / self.source_size
 
         #TODO change this ratio of 1.30e57
-        self.point_source_5s = self.extended_source_5s * 1.30e57
-        self.time2reach_n_sigma_SNR = self.acquisition_time *  np.square(n_sigma / self.SNR)
-
-
-
-        # print("Effective_area = ",np.unique(self.effective_area), "\n",
-        # "Exposure time = ", np.unique(self.exposure_time[self.i]),"\n",
-        # "Pixels_involved = %i * %i x %i"%( np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)  ,   np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale,1)    ,    ( np.ceil(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2)*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)), np.unique(self.pixels_total_source),"\n",
-        # "elem size pix = ", np.unique(self.elem_size),"\n",
-        # "Max_exposures = ",np.unique(self.N_images[self.i]), np.unique(self.N_images_true[self.i]),"\n",
-        # "Sky_CU = ",np.unique(self.Sky_CU),"\n",
-        # "Signal_CU = ",np.unique(self.Signal_LU)," reduction (%i) \n"%(100*self.flux_fraction),
-        # "Signal_e-_res_tot = ",np.unique(self.Signal_resolution[self.i]),"\n",
-        # "self.Signal_el = ",np.unique(self.Signal_el[self.i]),"\n",
-        # "self.Signal_resolution = ",np.unique(self.Signal_resolution[self.i]),"\n",
-        # "self.contributions_resolution [signal, dark, sky, rn, cic, add] = ",self.electrons_per_pix[self.i]* self.factor[self.i]**2,"good - \n",
-        # "noises_per_exp = ",self.noises_per_exp[self.i],"\n",
-        # "noises = ",self.noises[self.i],"\n",
-        # "verifications noises = ", (self.factor*np.array([self.signal_noise, self.Sky_noise, self.RN_final, self.Dark_current_noise, self.CIC_noise, self.Additional_background_noise])   )[:,self.i],"\n",
-        # "total noise = ", (self.factor*np.sqrt(self.signal_noise**2 + self.Dark_current_noise**2  + self.Additional_background_noise**2 + self.Sky_noise**2 + self.CIC_noise**2 + self.RN_final**2   ))[self.i],"\n",
-        # "ENF = ",self.ENF,"\n",
-        # # "Source_e-_source_tot = ",,"\n",
-        # "SNR = ",np.unique(self.SNR[self.i]))
-
-
-        # self.atm_trans=np.nan
-        # self.final_sky=np.nan
-        # self.Throughput_curve=np.nan
-        # print(self.acquisition_time, self.exposure_time[self.i] , self.readout_time)
-        # print(self.N_images_true[self.i], self.N_images[self.i] , self.cosmic_ray_loss[self.i])
-        # print("E2E troughput",int((100*self.QE_efficiency * self.Throughput * self.Atmosphere)[self.i]) , "\nFrame number=",self.N_images_true[self.i],"\nResolElem=",self.number_pixels_used, "\nSignal=",self.Signal_resolution[self.i])
-        # print("Sigma=5")
-        # print("Flux (e/rsol/Nframe), σ==5 :",self.signal_nsig_e_resol_nframe[self.i])
-        # print("Flux LU, σ==5 : %0.1E"%(self.signal_nsig_LU[self.i]))
-        # print("Flux	erg/cm2/s/''2/Å :",self.signal_nsig_ergs[self.i])
-        # print("Flux	overPSF :",self.extended_source_5s[self.i])
-        # print("Flux	point source :",self.point_source_5s[self.i])
-        # print("factor=",self.factor[self.i])
-        # print("N_images_true=",np.sqrt(self.N_images_true)[self.i] )
-        # print("resolution_element=", self.number_pixels_used)
-        # print("N_resol_element_A=",np.sqrt(self.N_resol_element_A))
-        # print("lambda_stack=",self.lambda_stack)
-        # print("dispersion=",self.dispersion)
-        # print("cosmic_ray_loss=",np.sqrt(self.cosmic_ray_loss)[self.i])
-        # print("N_images=",np.sqrt(self.N_images)[self.i])
-        # from astropy.cosmology import Planck15 as cosmo
-        # 4*np.pi* (cosmo.luminosity_distance(z=0.7).to("cm").value)**2 = 2.30e57
-
-    def revew_for_mat(self,IFS):
-
-
-
-        #####################################
-        # Any of the parameter below can either be a float or an array allowing to check the evolution of the SNR 
-        #####################################
-                
-        self.precise = False
-        self.spectro = self.spectrograph#False if np.isnan(self.instruments_dict[self.instrument]["dispersion"]) else True
-        #TODO be sure we account for potentialfwhm_sigma_ratio ratio here
-        #convolve input flux by instrument PSF
-        
-        if self.precise: # TODO are we sure we should do that here?
-            self.Signal *= (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) )
-            #convolve input flux by spectral resolution
-            self.spectro_resolution_A = 10*self.wavelength/self.Spectral_resolution
-            if self.spectro:
-                self.Signal *= (erf(self.Line_width / (2 * np.sqrt(2) * self.spectro_resolution_A  )) )
-            # print("Factor spatial and spectral",  (erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det)) ),   (erf(self.Line_width / (2 * np.sqrt(2) * 10*self.wavelength/self.Spectral_resolution)) ))
-
-
-
-        #####################################
-        # Adjust signal for circular aperture (fiber) geometry
-        #####################################
-        
-        if type(self.Slitlength) == np.float64:
-            if (self.Slitlength==self.Slitwidth):
-                self.Signal *= np.pi/4 # ratio between fiber disk and square slit
-
-        #####################################
-        # If precision mode is on (currently not), apply spatial and spectral resolution dimming
-        #####################################
-        if self.precise:
-            self.Signal *= erf(self.Size_source / (2 * np.sqrt(2) * self.PSF_RMS_det))
-            self.spectro_resolution_A = 10 * self.wavelength / self.Spectral_resolution
-            if self.spectro:
-                self.Signal *= erf(self.Line_width / (2 * np.sqrt(2) * self.spectro_resolution_A))
-
-
-        #####################################
-        # Compute fraction of signal passing through the slit (if slit spectro)
-        #####################################
-        
-        if ~np.isnan(self.Slitwidth).all(): #& (self.precise) # & (self.SNR_res!="per Source")
-            # assess flux fraction going through slit
-            # self.flux_fraction = ((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)     *    ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
-            self.flux_fraction =   ((1+erf(self.Slitlength/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)
-            if    (~self.IFS): 
-                self.flux_fraction *=((1+erf(self.Slitwidth/(2*np.sqrt(2)*self.PSF_RMS_mask)))-1)  
-        else:
-            self.flux_fraction = 1
-        self.flux_fraction_slit_applied = self.flux_fraction
-
-
-        # compute size of the spectral PSF in pixels
-        self.PSF_lambda_pix = 10*self.wavelength / self.Spectral_resolution / self.dispersion
-        fwhm_sigma_ratio =2.35#1.0 # 2.355
-        # compute the size of the source/res elem in pixels
-        if self.spectro:
-            source_spatial_pixels = np.maximum(1,np.minimum(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.pixel_scale, self.Slitlength / self.pixel_scale))
-            source_spectral_pixels = np.maximum(1, np.sqrt((self.Slitwidth/self.pixel_scale)**2 +self.PSF_lambda_pix**2 + (np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)**2))
-            self.source_size = np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale,1)    * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
-            self.pixels_total_source =  self.source_size  * ( np.ceil(np.sqrt(self.Size_source**2+self.PSF_RMS_mask**2)*fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
-        else:
-            self.source_size =  (self.Size_source *fwhm_sigma_ratio /self.pixel_scale) **2
-            self.elem_size = (self.PSF_RMS_det *fwhm_sigma_ratio /self.pixel_scale) **2
-
-        #####################################
-        # Determine number of pixels used in SNR estimation
-        #####################################
-
-        if self.SNR_res=="per pix":
-          self.number_pixels_used = 1
-        elif self.SNR_res=="per Res elem": # is that true ? when not IFS, the SNR won't get bigger than the slit , the rest will be cut
-            self.number_pixels_used = np.ceil(self.elem_size)
-        elif self.SNR_res=="per Source":
-            self.number_pixels_used = np.ceil(self.pixels_total_source)
-
-        #####################################
-        # Compute noise sources: CIC, dark current, and effective area
-        #####################################
-        self.ENF = 1 if (self.counting_mode | ((self.EM_gain*np.ones(self.len_xaxis))[self.i]<2)) else 2 # Excess Noise Factor 
-
-        self.CIC_noise = np.sqrt(self.CIC_charge * self.ENF) 
-        self.Dark_current_f = self.Dark_current * self.exposure_time / 3600 # e/pix/frame
-        self.Dark_current_noise =  np.sqrt(self.Dark_current_f * self.ENF)
-        self.effective_area =  self.QE * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
-        # For now we put the regular QE without taking into account the photon kept fracton, because then infinite loop. 
-        # Two methods to compute it: interpolate_optimal_threshold & compute_optimal_threshold
-        # self.pixel_scale  = (self.pixel_scale*np.pi/180/3600) #go from arcsec/pix to str/pix 
-        self.arcsec2str = (np.pi/180/3600)**2
-        self.Sky_CU = convert_ergs2LU(self.Sky, self.wavelength)  
-                
-        # The faction of detector lost by cosmic ray masking (taking into account ~5-10 impact per seconds and around 2000 pixels loss per impact (0.01%))
-        self.cosmic_ray_loss = np.minimum(self.cosmic_ray_loss_per_sec*(self.exposure_time+self.readout_time/2),1)
-        self.QE_efficiency = self.Photon_fraction_kept * self.QE
-        self.effective_area =  self.QE_efficiency * self.Throughput * self.Atmosphere  *    (self.Collecting_area * 100 * 100)
-        # TODO need to verify that the evolution the sky and signal makes sense with nfibers... Maybe this has been solved
-
-        self.source_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *   (self.Size_source   if self.IFS else   np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitwidth)   )
-        self.slit_size_arcsec_after_slit =     np.minimum(self.Size_source*fwhm_sigma_ratio,self.Slitlength)   *   (np.maximum(self.Size_source,self.Slitwidth)   if self.IFS else   self.Slitwidth   )
-
-        #####################################
-        # Convert sky background to LU and then to electrons
-        #####################################
-
-        if self.spectro: # previously was multiplying by self.nfibers *
-            # mat's solution provides a local optimum in dispersion that I don't get with my solution!!!
-            self.factor_CU2el_tot =     1*self.effective_area * self.arcsec2str * np.minimum(self.Line_width,self.Bandwidth) *  self.source_size_arcsec_after_slit  / self.pixels_total_source  
-            self.factor_CU2el_sky_tot = 1*self.effective_area * self.arcsec2str * np.maximum(np.minimum(self.Line_width,self.Bandwidth),self.dispersion) *  self.slit_size_arcsec_after_slit    / self.pixels_total_source  #it works only for a line emission and we take the total sky flux over the same pixels
-            # TODO maybe missing a factor 2.35 here...
-
-            # print(ratio, difference)
-            # if (difference > 0.1) | (ratio > 0.1):
-            #     print("Warning: difference or ratio between the two methods to compute the factor is too high: ", difference, ratio)
-            #     print("factor_CU2el_tot", self.factor_CU2el_tot, "factor_CU2el_average", self.factor_CU2el_average)            
-            self.factor_CU2el = self.factor_CU2el_tot
-            self.factor_CU2el_sky = self.factor_CU2el_sky_tot
-
-
-        else: 
-            # TODO for imager that already have some throughput, integrate over the throughput curve.
-            self.factor_CU2el =   self.pixel_scale**2 * self.Throughput_FWHM 
-            self.factor_CU2el_sky = self.pixel_scale**2 * self.Throughput_FWHM  
-
-
-        self.N_images = self.acquisition_time*3600/(self.exposure_time + self.readout_time)
-        self.N_images_true = self.N_images * (1-self.cosmic_ray_loss)
-
-        #TODO Here should be sure about the calculation. There is another way of taking the entire flux if it is a line 
-        self.sky = self.Sky_CU*self.factor_CU2el_sky*self.exposure_time  # el/pix/frame
-        self.Sky_noise = np.sqrt(self.sky * self.ENF) 
-        self.Signal_LU = convert_ergs2LU(self.Signal,self.wavelength)
-        # if 1==0: # if line is totally resolved (for cosmic web for instance)
-        #     self.Signal_el =  self.Signal_LU*self.factor_CU2el*self.exposure_time * self.flux_fraction_slit_applied  / self.spectral_resolution_pixel # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
-        # else: # if line is unresolved for QSO for instance
-        self.Signal_el =  self.Signal_LU * self.factor_CU2el * self.exposure_time * self.flux_fraction_slit_applied   # el/pix/frame#     Signal * (sky / Sky_)  #el/pix
-
-
-
-
-        #####################################
-        # Compute other noise contributions (read noise, extra background)
-        #####################################
-
-        # TODO in counting mode, Photon_fraction_kept should also be used for CIC
-        self.RN_final = self.RN  * self.RN_fraction_kept / self.EM_gain 
-        self.Additional_background = self.extra_background/3600 * self.exposure_time# e/pix/exp
-        self.Additional_background_noise = np.sqrt(self.Additional_background * self.ENF)
-        
-        self.signal_noise = np.sqrt(self.Signal_el * self.ENF)     #el / resol/ N frame
-
-        if self.spectro:
-            self.lambda_stack = 1 
-        self.N_resol_element_A = self.lambda_stack 
-        self.factor =   np.sqrt(self.number_pixels_used) * np.sqrt(self.N_resol_element_A) * np.sqrt(self.N_images_true)
-        self.Signal_resolution = self.Signal_el * self.factor**2# el/N exposure/resol
-        self.signal_noise_nframe = self.signal_noise * self.factor
-        self.Total_noise_final = self.factor*np.sqrt(self.signal_noise**2 + self.Dark_current_noise**2  + self.Additional_background_noise**2 + self.Sky_noise**2 + self.CIC_noise**2 + self.RN_final**2   ) #e/  pix/frame
-        self.SNR = self.Signal_resolution / self.Total_noise_final
-        self.snrs_per_pixel = self.Signal_el * self.N_images_true /   (self.Total_noise_final / np.sqrt(self.number_pixels_used) / np.sqrt(self.N_resol_element_A)) 
-        
-        if type(self.Total_noise_final + self.Signal_resolution) == np.float64:
-            n=0
-        else:
-            n =len(self.Total_noise_final + self.Signal_resolution) 
-        if n>1:
-            for name in ["signal_noise","Dark_current_noise", "Additional_background_noise","Sky_noise", "CIC_noise", "RN_final","Signal_resolution","Signal_el","sky","CIC_charge","Dark_current_f","RN","Additional_background"]:
-                setattr(self, name, getattr(self,name)*np.ones(n))
-        self.factor = self.factor*np.ones(n) if type(self.factor)== np.float64 else self.factor
-        if type(self.number_pixels_used) == np.float64 : 
-            self.noises_per_exp = np.sqrt(self.number_pixels_used) * np.array([self.signal_noise,  self.Dark_current_noise,  self.Sky_noise, self.RN_final, self.CIC_noise, self.Additional_background_noise, np.sqrt(self.Signal_el)]).T
-        else:
-            self.noises_per_exp = (np.sqrt(self.number_pixels_used) * np.array([self.signal_noise,  self.Dark_current_noise,  self.Sky_noise, self.RN_final, self.CIC_noise, self.Additional_background_noise, np.sqrt(self.Signal_el)])).T
-        self.noises = np.array([self.signal_noise*self.factor,  self.Dark_current_noise*self.factor,  self.Sky_noise*self.factor, self.RN_final*self.factor, self.CIC_noise*self.factor, self.Additional_background_noise*self.factor, self.Signal_resolution]).T
-        self.electrons_per_pix =  np.array([self.Signal_el,  self.Dark_current_f,  self.sky,  0*self.RN_final, self.CIC_charge, self.Additional_background]).T
-        self.names = ["Signal","Dark current", "Sky", "Read noise","CIC", "Extra background"]
-
-        if np.ndim(self.noises)==2:
-            self.percents =  100* np.array(self.noises).T[:-1,:]**2/self.Total_noise_final**2
-        else:
-            self.percents =  100* np.array(self.noises).T[:-1]**2/self.Total_noise_final**2            
-        
-        self.el_per_pix = self.Signal_el + self.sky + self.CIC_charge +  self.Dark_current_f
-        
-        
-        # NO NEED TO REVIEW AFTER THAT
-        n_sigma = 5
-        self.signal_nsig_e_resol_nframe = (n_sigma**2 * self.ENF + n_sigma * np.sqrt(4*self.Total_noise_final**2 - 4*self.signal_noise_nframe**2 + self.ENF**2*n_sigma**2))/2
-        # self.signal_nsig_e_resol_nframe = 457*np.ones(self.len_xaxis)
-        self.eresolnframe2lu = self.Signal_LU/self.Signal_resolution #TBV
-        self.signal_nsig_LU = self.signal_nsig_e_resol_nframe * self.eresolnframe2lu #TBV
-        self.signal_nsig_ergs = convert_LU2ergs(self.signal_nsig_LU, self.wavelength) 
-        self.extended_source_5s = self.signal_nsig_ergs * (self.PSF_RMS_det*2.35)**2
-
-        self.SB_lim_per_pix = self.signal_nsig_ergs
-        self.SB_lim_per_res = self.signal_nsig_ergs / self.elem_size
-        self.SB_lim_per_source = self.signal_nsig_ergs / self.source_size
         self.point_source_5s = self.extended_source_5s * 1.30e57
         self.time2reach_n_sigma_SNR = self.acquisition_time *  np.square(n_sigma / self.SNR)
        
@@ -3010,31 +2772,6 @@ class Observation:
             SNR_analogic = flux/np.sqrt(2*flux+2*noise+(RN/(EM_gain * ConversionGain))**2)
             threshold_55 = 5.5*RN*ConversionGain
             id_55 =  np.argmin(abs(threshold_55 - b))
-            # b = (bins[:-1]+bins[1:])/2
-            # rn_frac = np.array([np.sum(val0[b>bi]) for bi in b])/np.sum(val0) 
-            # rn_noise = (RN/(EM_gain * ConversionGain)) * rn_frac #/(EM_gain*ConversionGain)#/(EM_gain*ConversionGain)
-            # # rn_noise = RN * np.array([np.sum(val0[b>bi]) for bi in b])/np.sum(val0) #/(EM_gain*ConversionGain)#/(EM_gain*ConversionGain)
-            # signal12 = flux * np.array([np.sum(val1[b>bi])+np.sum(val2[b>bi]) for bi in b])/(np.sum(val1)+np.sum(val2))
-            # kept = np.array([np.sum(val1[b>bi]) for bi in b])/np.sum(val1)
-            # signal1 = flux * kept
-
-            # pc = np.ones(len(b))# 
-            #     # ([np.sum(val1[b>bi])for bi in b]/(np.array([np.sum(val1[b>bi])for bi in b])+np.array([np.sum(val0[b>bi]) for bi in b])))
-            # pc =  ([np.sum(val1[b>bi])for bi in b]/(np.array([np.sum(val1[b>bi])for bi in b])+np.array([np.sum(val0[b>bi]) for bi in b])))
-
-            # if dark_cic_sky_noise is None:
-            #     noise = np.sqrt(CIC_noise**2+dark_noise**2+Sky_noise**2)
-            #     # noise = np.sqrt(CIC_noise+dark_noise+Sky_noise)
-            # else:
-            #     noise = dark_cic_sky_noise
-            # # noise = np.sqrt(noise)
-            # # print('noises = ',noise)
-            # print("signal + dark + cic + Sky + rn = 1      :", "%0.2f + %0.2f+ %0.2f+%0.2f+%0.2f=%0.2f"%(flux,dark,CIC,sky,np.sum(val0)/np.sum(val0+val1+val2),  flux+dark+CIC+sky+np.sum(val0)/np.sum(val0+val1+val2)    ))
-            # SNR1 = signal1/np.sqrt(signal1+noise+np.array(rn_noise)**2)#
-            # # SNR1 = signal1/np.sqrt((flux+dark+CIC+sky)*kept+  ((1-(flux+dark+CIC+sky))*rn_frac)   )#
-            # SNR12 = pc*signal12/ np.sqrt(signal12+noise+np.array(rn_noise)**2)
-            # SNR_analogic = flux/np.sqrt(2*flux+2*noise+(RN/(EM_gain * ConversionGain))**2)
-            # print('SNR_analogic = ',SNR_analogic)
 
             lw=3
             if plot_:
@@ -3053,22 +2790,8 @@ class Observation:
             val0,_,l0 = ax1.hist(imaADU[im==0],bins=bins,alpha=0.5,label='0',log=True)
             val1,_,l1 = ax1.hist(imaADU[im==1],bins=bins,alpha=0.5,label='1',log=True)
             val2,_,l2 = ax1.hist(imaADU[im==2],bins=bins,alpha=0.5,label='2',log=True)
-            # val3,_,l3 = ax1.hist(imaADU[im==3],bins=bins,alpha=0.5,label='3',log=True)
-            # val4,_,l4 = ax1.hist(imaADU[im==4],bins=bins,alpha=0.5,label='4',log=True)
-            # val5,_,l5 = ax1.hist(imaADU[im==5],bins=bins,alpha=0.5,label='5',log=True)
             ax1.hist(imaADU.flatten(),bins=bins,label='Total histogram',log=True,histtype='step',lw=1,color='k')
-            # ax1.fill_between([bins[np.argmin(val0>val1)],bins[np.argmax(val0>val1)]],[val0.max(),val0.max()],[1.2*val0.max(),1.2*val0.max()],alpha=0.3,color="C0")
-            # a0 = np.where(val0>val1)[0].max()
-            # a1 = np.where((val1>val2)&(val1>val0))[0].max()
-            # a2 = np.where((val2>val3)&(val2>val1))[0].max()
-            # a3 = np.where((val3>val4)&(val3>val2))[0].max()
-            # a4 = np.where((val4>val5)&(val4>val3))[0].max()
-            # ax1.fill_between([ bins[0],bins[a0]],[val0.max(),val0.max()],[1.2*val0.max(),1.2*val0.max()],alpha=0.3,color="C0")
-            # ax1.fill_between([bins[a0],bins[a1]],[val0.max(),val0.max()],[1.2*val0.max(),1.2*val0.max()],alpha=0.3,color="C1")
-            # ax1.fill_between([bins[a1],bins[a2]],[val0.max(),val0.max()],[1.2*val0.max(),1.2*val0.max()],alpha=0.3,color="C2")
-            # ax1.fill_between([bins[a2],bins[a3]],[val0.max(),val0.max()],[1.2*val0.max(),1.2*val0.max()],alpha=0.3,color="C3")
-            # ax1.fill_between([bins[a3],bins[a4]],[val0.max(),val0.max()],[1.2*val0.max(),1.2*val0.max()],alpha=0.3,color="C4")
-            # ax1.fill_between([bins[a4],bins[-1]],[val0.max(),val0.max()],[1.2*val0.max(),1.2*val0.max()],alpha=0.3,color="C5")
+
         else:
             val0,_ = np.histogram(imaADU[im==0],bins=bins)#,alpha=0.5,label='0',log=True)
             val1,_ = np.histogram(imaADU[im==1],bins=bins)#,alpha=0.5,label='1',log=True)
@@ -3177,6 +2900,10 @@ class Observation:
         """
         Return the threshold optimizing the SNR
         """
+        table_threshold = fits.open(path+"../data/Instruments/EMCCD/%sthreshold_%s.fits"%(type_,n))[0].data
+        table_snr = fits.open(path+"../data/Instruments/EMCCD/%ssnr_max_%s.fits"%(type_,n))[0].data
+        table_fraction_rn = fits.open(path+"../data/Instruments/EMCCD/%sfraction_rn_%s.fits"%(type_,n))[0].data
+        table_fraction_flux = fits.open(path+"../data/Instruments/EMCCD/%sfraction_flux_%s.fits"%(type_,n))[0].data
         #self.Signal_el if np.isscalar(self.Signal_el) else 0.3
         EM_gain = self.EM_gain #if np.isscalar(self.EM_gain) else self.EM_gain[i]
         RN= self.RN #if np.isscalar(self.RN) else self.RN[i]#80
