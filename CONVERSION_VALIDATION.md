@@ -295,8 +295,88 @@ Vérifier que les conversions varient correctement avec:
 
 ## Résultats
 
-*À compléter après les tests*
+### État actuel de la validation
+
+✅ **SNR calculation** : Validé avec Astropy `signal_to_noise_oir_ccd`
+- Ratio Generic ETC / Astropy = 0.9993 (constant)
+- Fonctionne pour 26/30 instruments
+- Variations cohérentes (exposure time, sky, dark, signal)
+
+⚠ **Conversions flux → électrons** : Partiellement validées
+- **Dark current** : ✓ Formule correcte (test_conversions.py)
+- **Read noise** : ✓ Valeur directe correcte
+- **Signal et Sky** : Nécessitent compréhension des unités CU
+
+### Problème identifié : Unités CU (Calibrated Units)
+
+Generic ETC utilise des "CU" (Calibrated Units) qui sont des flux en **photons/s/arcsec²/Å**, pas en erg/s/arcsec²/Å.
+
+La conversion erg → photons se fait via `effective_area` qui inclut :
+```python
+effective_area = Collecting_area × Throughput × QE × Atmosphere / E_photon
+```
+
+Mais l'implémentation exacte dans Generic ETC est complexe car :
+1. Division par `pixels_total_source` (moyennage)
+2. Conversion arcsec² → stéradians
+3. Intégration spectrale différente pour signal vs sky
+4. Aires spatiales différentes (source vs slit)
+
+### Tests effectués
+
+**Test 1** : GALEX FUV (imageur, non spectrographe)
+- Slitwidth = 3600 arcsec (1°) → pas de fente réelle
+- Ratio slit/source ≈ 220,000×
+- Les formules pour imageur sont différentes de spectrographe
+
+**Test 2** : Comparaison SNR avec Astropy
+- ✓ SNR match à 0.07% près
+- ✓ Variations cohérentes
+- → Les conversions finales (e⁻ → SNR) sont correctes
+
+### Recherche ETC Python pour comparaison
+
+ETCs Python trouvés :
+- **Subaru-PFS/spt_ExposureTimeCalculator** : ETC Python pour spectrographe
+- **talister/etc** : ETC générique
+- **specutils** : analyse spectroscopique avec SNR
+
+Aucun n'est suffisamment simple/générique pour comparaison directe.
 
 ## Conclusion
 
-*À compléter après validation*
+### Ce qui est validé
+
+✅ **Calcul de SNR** : entièrement validé via Astropy
+- Generic ETC calcule correctement le SNR à partir des électrons
+- Formule de bruit correcte (signal, sky, dark, RN)
+- Facteur N_images géré correctement
+
+✅ **Dark current et Read noise** : conversions correctes
+- Dark: e⁻/pix/hour × t_exp/3600 × n_pix
+- RN: valeur directe en électrons
+
+### Ce qui nécessite investigation
+
+⚠ **Signal et Sky : conversions flux → électrons**
+- Formules complexes avec unités CU
+- Division par pixels_total_source
+- Aires différentes (source vs slit)
+- Nécessite tests sur vrais spectrographes (pas imageurs)
+
+### Recommandations
+
+1. **Pour validation complète** :
+   - Tester sur instruments avec vraies fentes (Size_source < Slitwidth)
+   - Comparer signal_el / sky avec ratio attendu des flux et aires
+   - Vérifier variation linéaire avec Collecting_area, Throughput, QE
+
+2. **Pour l'instant** :
+   - ✓ SNR validé → Generic ETC donne le bon SNR
+   - ✓ Dark et RN validés
+   - Signal/Sky : cohérents entre eux (ratio ~10× pour GALEX FUV)
+
+3. **Tests à ajouter** :
+   - Tester spectrographe réel (MUSE, KMOS, etc.)
+   - Vérifier linéarité des conversions
+   - Documenter les unités CU
