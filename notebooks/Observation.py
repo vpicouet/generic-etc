@@ -2428,6 +2428,7 @@ class Observation:
             source_spatial_pixels = np.maximum(1, np.minimum(np.sqrt(self.Size_source**2 + self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.pixel_scale, self.Slitlength / self.pixel_scale))
             source_spectral_pixels = np.maximum(1, np.sqrt(self.PSF_lambda_pix**2 + (np.minimum(self.Line_width, self.Bandwidth) / self.dispersion)**2))
             self.source_size = np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale, 1) * np.sqrt(source_spatial_pixels**2 + source_spectral_pixels**2)
+            self.source_size = np.maximum(np.minimum(self.Size_source * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale, 1) * source_spectral_pixels
             self.pixels_total_source = self.source_size * (np.ceil(np.sqrt(self.Size_source**2 + self.PSF_RMS_mask**2) * fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
             self.elem_size = np.ceil(np.minimum(self.PSF_RMS_mask * fwhm_sigma_ratio, self.Slitlength) / self.pixel_scale) * np.ceil(np.sqrt(np.minimum(self.PSF_RMS_det / self.pixel_scale, self.PSF_lambda_pix)**2 + np.minimum(self.Line_width / self.dispersion, self.PSF_lambda_pix)**2)) * (np.ceil(self.PSF_RMS_mask * fwhm_sigma_ratio / self.Slitwidth) if self.IFS else 1)
         else:  # Imager mode
