@@ -8,6 +8,9 @@ __pycache__/
 *.pyc
 *.pyo
 
+# External repositories
+keck-etc/
+
 data/Emission_cube/lya_cube_merged_with_artificial_source_CU_1pc.fits
 
 data/Emission_cube/
