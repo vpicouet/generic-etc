@@ -403,7 +403,7 @@ def resample_cube(input_hdu, wave_range_nm, spatial_extent_arcsec, output_shape,
             (output_y[1] - output_y[0]) / (input_y[1] - input_y[0]) *
             (output_wave[1] - output_wave[0]) / (input_wave[1] - input_wave[0])
         )
-        print(scale_factor,resampled_cube)
+        # print(scale_factor,resampled_cube)
         return resampled_cube * abs(scale_factor)
         # # TODO est ce des pixels ou autre chose ?? si c'est des pixels il faut multiplier par le rapport de la taille des pixels
 
